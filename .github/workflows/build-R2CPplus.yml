@@ -3,80 +3,44 @@ name: Build iStoreOS for R2C Plus
 on:
   push:
     branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
-  schedule:
-    - cron: '0 2 * * 0'
-  workflow_dispatch:
+  workflow_dispatch:  # 手动触发
     inputs:
       version:
         description: '固件版本号'
         required: false
         default: '$(date +%Y%m%d)'
-      clean_build:
-        description: '是否完全清理构建'
-        required: false
-        default: 'false'
 
 env:
   DEVICE: nanopi-r2c-plus
   LAN_IP: 192.168.101.1
-  TARGET: rockchip/armv8
-  PROFILE: friendlyarm_nanopi-r2c-plus
-  # 使用稳定的版本标签
-  OPENWRT_VERSION: v22.03.5
-  ISTOREOS_COMMIT: 5e3a3c9e8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d
-  FRIENDLYWRT_BRANCH: master-22.03
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  LAN_NETMASK: 255.255.255.0
+  LAN_DHCP_START: 100
+  LAN_DHCP_END: 250
+  FEEDS_CONF: feeds.conf
+  CONFIG_FILE: configs/r2cplus.config
 
 jobs:
-  check-and-prepare:
-    runs-on: ubuntu-22.04
-    outputs:
-      should_build: ${{ steps.check.outputs.should_build }}
-    steps:
-      - name: Check for changes
-        id: check
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          elif git diff --name-only HEAD~1 HEAD | grep -E "\.config$|patches/|scripts/|\.github/workflows/" > /dev/null; then
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          else
-            echo "should_build=false" >> $GITHUB_OUTPUT
-          fi
-
   build:
-    needs: check-and-prepare
-    if: needs.check-and-prepare.outputs.should_build == 'true'
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
-    env:
-      CCACHE_DIR: /tmp/ccache
-      CCACHE_MAXSIZE: 2G
-      CCACHE_COMPRESS: 1
-      FORCE_UNSAFE_CONFIGURE: 1
-      DEBIAN_FRONTEND: noninteractive
-      
+    timeout-minutes: 180
+    strategy:
+      matrix:
+        include:
+          - target: rockchip/armv8
+            profile: friendlyarm_nanopi-r2c-plus
+            subtarget: rockchip_armv8
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         submodules: recursive
         fetch-depth: 1
-        path: source
 
-    - name: Setup build environment
+    - name: Set up environment
       run: |
-        # 更新系统并安装编译依赖
         sudo apt-get update
-        
-        # 分阶段安装依赖，避免超时
-        echo "安装基础编译工具..."
-        sudo apt-get install -y --no-install-recommends \
+        sudo apt-get install -y \
           build-essential \
           ccache \
           ecj \
@@ -86,455 +50,129 @@ jobs:
           gawk \
           gettext \
           git \
+          java-propose-classpath \
+          libelf-dev \
           libncurses5-dev \
           libncursesw5-dev \
           libssl-dev \
           python3 \
+          python3-distutils \
           python3-setuptools \
+          python3-dev \
           python3-pip \
           rsync \
           subversion \
           swig \
-          unzip \
-          wget \
-          curl \
-          mc \
-          nano
-        
-        echo "安装内核编译工具..."
-        sudo apt-get install -y --no-install-recommends \
-          libelf-dev \
+          time \
+          xsltproc \
+          zlib1g-dev \
           binutils \
           bzip2 \
           flex \
           gcc-multilib \
           g++-multilib \
-          gperf
-        
-        echo "安装其他工具..."
-        sudo apt-get install -y --no-install-recommends \
-          zlib1g-dev \
-          xsltproc \
-          time \
-          p7zip-full \
-          automake \
-          autoconf \
-          libtool \
-          pkg-config
-        
-        # 验证工具安装
-        gcc --version
-        g++ --version
-        python3 --version
-        git --version
-        
-        # 配置ccache
-        mkdir -p ${{ env.CCACHE_DIR }}
-        ccache -o max_size=${{ env.CCACHE_MAXSIZE }}
-        ccache -s
+          gperf \
+          unzip \
+          libxml-parser-perl \
+          mercurial \
+          wget \
+          curl \
+          mc \
+          tree
+        echo "CCACHE_DIR=$GITHUB_WORKSPACE/ccache" >> $GITHUB_ENV
+        ccache -o max_size=5G
 
-    - name: Prepare build directory
+    - name: Prepare toolchain
       run: |
-        cd $GITHUB_WORKSPACE
-        rm -rf build
-        mkdir -p build
-        mv source/* build/
-        rm -rf source
-        cd build
-        
-        # 创建必要的目录
-        mkdir -p dl
-        mkdir -p logs
-        mkdir -p configs
-        mkdir -p artifacts
-        
-        echo "工作目录准备完成"
-        ls -la
-
-    - name: Clone OpenWrt source
-      run: |
-        cd $GITHUB_WORKSPACE/build
-        
-        echo "克隆OpenWrt源码..."
-        git clone https://git.openwrt.org/openwrt/openwrt.git --depth=1 -b ${{ env.OPENWRT_VERSION }} openwrt
-        
-        cd openwrt
-        
-        # 配置git
-        git config --global user.email "actions@github.com"
         git config --global user.name "GitHub Actions"
-        
-        # 显示当前版本
-        git log --oneline -1
+        git config --global user.email "actions@github.com"
 
-    - name: Setup feeds configuration
+    - name: Clone iStoreOS source
       run: |
-        cd $GITHUB_WORKSPACE/build/openwrt
-        
-        echo "配置feeds..."
-        cat > feeds.conf << 'EOF'
-src-git packages https://git.openwrt.org/feed/packages.git^f6a71b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a
-src-git luci https://git.openwrt.org/project/luci.git^d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c
-src-git routing https://git.openwrt.org/feed/routing.git^b2a1c0d9f8e7c6b5a4f3e2d1c0b9a8f7e6d5c4b
-src-git telephony https://git.openwrt.org/feed/telephony.git^a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b
-EOF
-        
-        # 添加iStoreOS feed
-        echo "src-git istore https://github.com/istoreos/istore.git;main" >> feeds.conf
-        
-        # 添加FriendlyWrt feed
-        echo "src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;${{ env.FRIENDLYWRT_BRANCH }}" >> feeds.conf
-        
-        cat feeds.conf
+        git clone https://github.com/istoreos/istoreos.git --depth=1 -b main
+        cd istoreos
+        git clone https://git.openwrt.org/openwrt/openwrt.git --depth=1 -b openwrt-22.03 openwrt
+        cd openwrt
 
-    - name: Update and install feeds
+    - name: Configure feeds
       run: |
-        cd $GITHUB_WORKSPACE/build/openwrt
+        cd istoreos/openwrt
+        cat > ${{ env.FEEDS_CONF }} << EOF
+        src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;master-24.10
+        src-git istore https://github.com/istoreos/istore.git;main
+        src-git packages https://git.openwrt.org/feed/packages.git^e0e38e7f3a8b6b7d1a34d0c6b4e5e6f7a8b9c0d1
+        src-git luci https://git.openwrt.org/project/luci.git^a1b2c3d4e5f67890
+        src-git routing https://git.openwrt.org/feed/routing.git
+        src-git telephony https://git.openwrt.org/feed/telephony.git
+        EOF
         
-        echo "更新feeds..."
-        timeout 300 ./scripts/feeds update -a
-        
-        if [ $? -eq 124 ]; then
-          echo "Feed更新超时，重试..."
-          ./scripts/feeds update -a
-        fi
-        
-        echo "安装feeds..."
+        ./scripts/feeds update -a
         ./scripts/feeds install -a
-        
-        # 特别安装iStoreOS核心包
         ./scripts/feeds install istore
-        ./scripts/feeds install luci-app-store
-        ./scripts/feeds install luci-app-quickstart
-        
-        echo "Feeds安装完成"
 
-    - name: Apply patches and custom scripts
+    - name: Apply R2C Plus patches
       run: |
-        cd $GITHUB_WORKSPACE/build/openwrt
-        
-        # 应用自定义补丁
-        if [ -f ../../configs/r2cplus.config ]; then
-          cp ../../configs/r2cplus.config .config
-        fi
-        
-        if [ -f ../../scripts/apply_patches.sh ]; then
-          chmod +x ../../scripts/apply_patches.sh
-          ../../scripts/apply_patches.sh
-        fi
-        
-        if [ -f ../../scripts/custom_scripts.sh ]; then
-          chmod +x ../../scripts/custom_scripts.sh
-          ../../scripts/custom_scripts.sh
-        fi
-        
-        # 创建必要的目录结构
-        mkdir -p files/etc/uci-defaults
-        mkdir -p files/etc/board.d
-        mkdir -p files/usr/bin
+        cd istoreos/openwrt
+        chmod +x ../../scripts/apply_patches.sh
+        ../../scripts/apply_patches.sh
 
-    - name: Configure build
+    - name: Run custom scripts
       run: |
-        cd $GITHUB_WORKSPACE/build/openwrt
-        
-        # 应用基础配置
-        cp ../../configs/r2cplus.config .config
-        
-        # 设置IP地址
+        cd istoreos/openwrt
+        chmod +x ../../scripts/custom_scripts.sh
+        ../../scripts/custom_scripts.sh
+
+    - name: Copy configuration
+      run: |
+        cd istoreos/openwrt
+        cp ../../${{ env.CONFIG_FILE }} .config
         sed -i "s/CONFIG_TARGET_IP_ADDR=.*/CONFIG_TARGET_IP_ADDR=\"${{ env.LAN_IP }}\"/" .config
-        sed -i "s/CONFIG_TARGET_NETMASK=.*/CONFIG_TARGET_NETMASK=\"255.255.255.0\"/" .config
-        
-        # 生成默认配置
-        echo "运行defconfig..."
+        sed -i "s/CONFIG_TARGET_NETMASK=.*/CONFIG_TARGET_NETMASK=\"${{ env.LAN_NETMASK }}\"/" .config
         make defconfig
-        
-        # 显示配置差异
-        echo "配置差异:"
-        ./scripts/diffconfig.sh
-        
-        # 验证关键配置
-        echo "验证关键配置:"
-        grep -E "CONFIG_TARGET_rockchip|CONFIG_TARGET_IP_ADDR|CONFIG_PACKAGE_luci-app-store" .config || true
+        ./scripts/diffconfig.sh > diffconfig.log
+        cat diffconfig.log
 
-    - name: Download sources with retry
+    - name: Download packages
       run: |
-        cd $GITHUB_WORKSPACE/build/openwrt
-        
-        echo "开始下载源码包..."
-        
-        # 下载函数，带重试
-        download_with_retry() {
-          local retries=3
-          local count=0
-          local success=0
-          
-          while [ $count -lt $retries ]; do
-            echo "尝试 $((count+1))/$retries 下载..."
-            
-            if make -j$(nproc) download 2>&1 | tee logs/download.log; then
-              success=1
-              break
-            fi
-            
-            count=$((count+1))
-            
-            if [ $count -lt $retries ]; then
-              echo "下载失败，等待10秒后重试..."
-              sleep 10
-              
-              # 清理可能的损坏文件
-              find dl -name "*.tmp" -delete
-              find dl -name "*.partial" -delete
-            fi
-          done
-          
-          if [ $success -eq 0 ]; then
-            echo "所有下载尝试都失败"
-            return 1
-          fi
-          
-          return 0
-        }
-        
-        # 执行下载
-        if ! download_with_retry; then
-          echo "使用单线程下载重试..."
-          make -j1 V=s download 2>&1 | tee logs/download_single.log
-        fi
-        
-        # 验证下载完整性
-        echo "验证下载完整性..."
-        make -j1 V=s download 2>&1 | tee logs/download_verify.log
-        
-        echo "下载完成，检查dl目录:"
-        du -sh dl/
-        ls -la dl/ | wc -l
-
-    - name: Prepare kernel configuration
-      run: |
-        cd $GITHUB_WORKSPACE/build/openwrt
-        
-        echo "准备内核配置..."
-        
-        # 进入内核配置界面
-        make target/linux/{prepare,compile} || true
-        
-        # 创建默认内核配置
-        mkdir -p logs
-        cp .config logs/config-before-kernel.txt
+        cd istoreos/openwrt
+        make -j$(nproc) download || make -j1 V=s download
+        make -j1 V=s download  # 验证下载完整性
 
     - name: Build firmware
       run: |
-        cd $GITHUB_WORKSPACE/build/openwrt
-        
-        echo "开始编译固件..."
-        
-        # 获取CPU核心数
-        CORES=$(nproc)
-        BUILD_JOBS=$((CORES + 1))
-        
-        # 设置环境变量
-        export FORCE_UNSAFE_CONFIGURE=1
-        
-        echo "使用 $BUILD_JOBS 个并行任务编译"
-        
-        # 编译函数，带错误处理
-        build_firmware() {
-          local attempt=1
-          local max_attempts=2
-          local build_success=0
-          
-          while [ $attempt -le $max_attempts ]; do
-            echo "=== 编译尝试 $attempt/$max_attempts ==="
-            echo "开始时间: $(date)"
-            
-            # 清理可能的编译错误
-            if [ "${{ github.event.inputs.clean_build }}" = "true" ] && [ $attempt -eq 1 ]; then
-              echo "执行完整清理..."
-              make clean
-              make dirclean
-            fi
-            
-            # 编译
-            if [ $attempt -eq 1 ]; then
-              # 第一次尝试：并行编译
-              echo "尝试并行编译..."
-              if make -j$BUILD_JOBS V=sc 2>&1 | tee logs/build_attempt_${attempt}.log; then
-                build_success=1
-                break
-              fi
-            else
-              # 第二次尝试：单线程编译
-              echo "尝试单线程编译..."
-              if make -j1 V=s 2>&1 | tee logs/build_attempt_${attempt}.log; then
-                build_success=1
-                break
-              fi
-            fi
-            
-            echo "编译尝试 $attempt 失败，检查错误..."
-            
-            # 分析错误日志
-            if grep -i "error:" logs/build_attempt_${attempt}.log | head -20; then
-              echo "发现编译错误"
-            fi
-            
-            if grep -i "undefined reference" logs/build_attempt_${attempt}.log; then
-              echo "发现链接错误"
-            fi
-            
-            attempt=$((attempt + 1))
-            
-            if [ $attempt -le $max_attempts ]; then
-              echo "等待5秒后重试..."
-              sleep 5
-            fi
-          done
-          
-          if [ $build_success -eq 0 ]; then
-            echo "所有编译尝试都失败"
-            return 1
-          fi
-          
-          return 0
+        cd istoreos/openwrt
+        make -j$(($(nproc) + 1)) V=s 2>&1 | tee build.log || {
+          echo "Build failed, trying single thread..."
+          make -j1 V=s 2>&1 | tee build-single.log
         }
-        
-        # 执行编译
-        if ! build_firmware; then
-          echo "编译失败，尝试分步编译..."
-          
-          # 分步编译
-          echo "步骤1: 编译工具链..."
-          make toolchain/install -j1 V=s 2>&1 | tee logs/toolchain.log || true
-          
-          echo "步骤2: 编译目标文件..."
-          make target/compile -j1 V=s 2>&1 | tee logs/target.log || true
-          
-          echo "步骤3: 编译软件包..."
-          make package/compile -j1 V=s 2>&1 | tee logs/package.log || true
-          
-          echo "步骤4: 编译镜像..."
-          make -j1 V=s 2>&1 | tee logs/final_build.log
-        fi
-        
-        echo "编译完成，检查输出:"
-        find bin/ -name "*.img" -o -name "*.gz" -o -name "*.bin" 2>/dev/null | head -20
 
-    - name: Check build artifacts
+    - name: Collect artifacts
       run: |
-        cd $GITHUB_WORKSPACE/build/openwrt
-        
-        echo "检查编译产物..."
-        
-        # 查找固件文件
-        FIRMWARE_FILES=$(find bin/targets -name "*.img" -o -name "*.img.gz" -o -name "*.bin" 2>/dev/null || true)
-        
-        if [ -z "$FIRMWARE_FILES" ]; then
-          echo "错误: 未找到固件文件"
-          echo "bin目录内容:"
-          find bin/ -type f 2>/dev/null || true
-          ls -la bin/ 2>/dev/null || true
-          
-          # 检查错误日志
-          echo "最后的错误日志:"
-          tail -100 logs/build*.log 2>/dev/null || tail -100 build.log 2>/dev/null || echo "无日志文件"
-          
-          exit 1
-        fi
-        
-        echo "找到固件文件:"
-        echo "$FIRMWARE_FILES"
-        
-        # 收集产物
-        mkdir -p ../artifacts
-        for file in $FIRMWARE_FILES; do
-          cp "$file" ../artifacts/
-        done
-        
-        # 复制配置文件
-        cp .config ../artifacts/config.txt
-        cp feeds.conf ../artifacts/feeds.txt
-        
-        # 复制重要日志
-        cp logs/*.log ../artifacts/ 2>/dev/null || true
-        
-        # 创建构建信息
-        echo "构建信息:" > ../artifacts/build-info.txt
-        echo "时间: $(date)" >> ../artifacts/build-info.txt
-        echo "提交: $GITHUB_SHA" >> ../artifacts/build-info.txt
-        echo "设备: ${{ env.DEVICE }}" >> ../artifacts/build-info.txt
-        echo "IP地址: ${{ env.LAN_IP }}" >> ../artifacts/build-info.txt
-        echo "OpenWrt版本: ${{ env.OPENWRT_VERSION }}" >> ../artifacts/build-info.txt
-        
-        echo "产物统计:"
-        du -sh ../artifacts/
-        ls -lh ../artifacts/
+        cd istoreos/openwrt
+        mkdir -p ../../artifacts
+        find bin/targets -name "*.img*" -o -name "*.bin*" -o -name "*.gz*" | xargs -I {} cp {} ../../artifacts/
+        cp .config ../../artifacts/
+        cp build.log ../../artifacts/ 2>/dev/null || true
+        cp build-single.log ../../artifacts/ 2>/dev/null || true
+        echo "Build date: $(date)" > ../../artifacts/build-info.txt
+        echo "Git commit: $GITHUB_SHA" >> ../../artifacts/build-info.txt
+        echo "Device: ${{ env.DEVICE }}" >> ../../artifacts/build-info.txt
+        echo "LAN IP: ${{ env.LAN_IP }}" >> ../../artifacts/build-info.txt
 
     - name: Upload artifacts
-      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.DEVICE }}-firmware-${{ github.run_id }}
-        path: $GITHUB_WORKSPACE/build/artifacts/*
+        path: |
+          artifacts/*
         retention-days: 30
         if-no-files-found: error
-        compression-level: 0
 
-    - name: Upload logs on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
+    - name: Upload to release
+      if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
       with:
-        name: build-logs-${{ github.run_id }}
-        path: |
-          $GITHUB_WORKSPACE/build/openwrt/logs/*
-          $GITHUB_WORKSPACE/build/openwrt/build.log
-          $GITHUB_WORKSPACE/build/openwrt/.config
-        retention-days: 7
-
-    - name: Notify on failure
-      if: failure()
-      uses: 8398a7/action-slack@v3
-      with:
-        status: failure
-        channel: '#build-notifications'
-        username: 'Build Bot'
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-  release:
-    needs: build
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-      
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ${{ env.DEVICE }}-firmware-*
-          path: artifacts
-          
-      - name: Create release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: artifacts/**
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          tag_name: ${{ github.run_id }}
-          name: "Build ${{ github.run_id }} - ${{ env.DEVICE }}"
-          body: |
-            # iStoreOS for R2C Plus
-            
-            **构建信息**
-            - 时间: ${{ fromJSON(steps.date.outputs.date) }}
-            - 设备: ${{ env.DEVICE }}
-            - IP地址: ${{ env.LAN_IP }}
-            - OpenWrt版本: ${{ env.OPENWRT_VERSION }}
-            
-            **刷机说明**
-            1. 使用balenaEtcher写入SD卡
-            2. 插入R2C Plus启动
-            3. 访问 http://${{ env.LAN_IP }}
-            4. 用户名: root, 密码: admin
+        files: artifacts/*
+        draft: false
+        prerelease: false
+        generate_release_notes: true
