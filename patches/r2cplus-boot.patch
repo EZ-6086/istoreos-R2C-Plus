@@ -1,1 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: R2CPlus Builder <builder@github.com>
+Date: $(date)
+Subject: [PATCH] Add NanoPi R2C Plus support with 192.168.101.1 default IP
 
+Signed-off-by: R2CPlus Builder <builder@github.com>
+---
+ target/linux/rockchip/image/armv8.mk                 | 12 ++++++++++++
+ .../etc/board.d/02_network                          | 20 ++++++++++++++++++++
+ .../etc/hotplug.d/net/10-net-soc_rk3328             | 12 ++++++++++++
+ 3 files changed, 44 insertions(+)
+
+diff --git a/target/linux/rockchip/image/armv8.mk b/target/linux/rockchip/image/armv8.mk
+index abcdef1..1234567 100644
+--- a/target/linux/rockchip/image/armv8.mk
++++ b/target/linux/rockchip/image/armv8.mk
+@@ -25,6 +25,18 @@ define Device/friendlyarm_nanopi-r2s
+ endef
+ TARGET_DEVICES += friendlyarm_nanopi-r2s
+ 
++define Device/friendlyarm_nanopi-r2c-plus
++  DEVICE_VENDOR := FriendlyARM
++  DEVICE_MODEL := NanoPi R2C Plus
++  SOC := rk3328
++  UBOOT_DEVICE_NAME := nanopi-r2c-plus-rk3328
++  IMAGE/sysupgrade.img.gz := boot-combined | boot-script nanopi-r2c-plus | sdcard-img | gzip | append-metadata
++  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-r8169 kmod-ata-ahci \
++    kmod-ata-core kmod-usb-storage kmod-usb-storage-uas \
++    kmod-usb-net-cdc-ether kmod-usb-net-asix
++endef
++TARGET_DEVICES += friendlyarm_nanopi-r2c-plus
++
+ define Device/friendlyarm_nanopi-r4s
+   DEVICE_VENDOR := FriendlyARM
+   DEVICE_MODEL := NanoPi R4S
+diff --git a/target/linux/rockchip/armv8/base-files/etc/board.d/02_network b/target/linux/rockchip/armv8/base-files/etc/board.d/02_network
+index 89abcdef..fedcba98 100644
+--- a/target/linux/rockchip/armv8/base-files/etc/board.d/02_network
++++ b/target/linux/rockchip/armv8/base-files/etc/board.d/02_network
+@@ -9,6 +9,16 @@ case "$board" in
+ 		ucidef_set_interface_wan "eth0"
+ 		ucidef_set_interface_lan "eth1"
+ 		;;
++	friendlyarm,nanopi-r2c-plus)
++		# NanoPi R2C Plus - 单千兆LAN + USB LAN
++		ucidef_set_interfaces_lan "eth0"
++		
++		# 如果有USB网卡，则作为WAN口
++		if [ -d "/sys/class/net/eth1" ]; then
++			ucidef_set_interface_wan "eth1"
++		fi
++		ucidef_set_interface_lan "eth0" "192.168.101.1" "255.255.255.0"
++		;;
+ 	*)
+ 		ucidef_set_interface_lan "eth0"
+ 		;;
+@@ -20,6 +30,16 @@ nanopi-r2s)
+ 	ucidef_set_interfaces_lan_wan "eth1" "eth0"
+ 	;;
+ 
++nanopi-r2c-plus)
++	# R2C Plus网络配置
++	ucidef_set_interfaces_lan "eth0"
++	
++	# 配置默认IP
++	ucidef_set_interface_lan "eth0" "192.168.101.1" "255.255.255.0"
++	
++	# 如果有USB网卡，添加为WAN
++	[ -e "/sys/class/net/eth1" ] && ucidef_set_interface_wan "eth1"
++	;;
+ *)
+ 	ucidef_set_interfaces_lan "eth0"
+ 	;;
+diff --git a/target/linux/rockchip/armv8/base-files/etc/hotplug.d/net/10-net-soc_rk3328 b/target/linux/rockchip/armv8/base-files/etc/hotplug.d/net/10-net-soc_rk3328
+index 01234567..89abcdef 100644
+--- a/target/linux/rockchip/armv8/base-files/etc/hotplug.d/net/10-net-soc_rk3328
++++ b/target/linux/rockchip/armv8/base-files/etc/hotplug.d/net/10-net-soc_rk3328
+@@ -9,6 +9,18 @@ case "$board" in
+ 		ucidef_set_interface_wan "eth0"
+ 		ucidef_set_interface_lan "eth1"
+ 		;;
++	friendlyarm,nanopi-r2c-plus)
++		# R2C Plus专用网络配置
++		# LAN: eth0, WAN: eth1 (USB)
++		ucidef_set_interface_lan "eth0"
++		
++		# 设置LAN IP
++		uci set network.lan.ipaddr="192.168.101.1"
++		uci set network.lan.netmask="255.255.255.0"
++		
++		# USB网卡作为WAN
++		[ -d "/sys/class/net/eth1" ] && ucidef_set_interface_wan "eth1"
++		;;
+ 	*)
+ 		ucidef_set_interface_lan "eth0"
+ 		;;
+-- 
+2.34.1
