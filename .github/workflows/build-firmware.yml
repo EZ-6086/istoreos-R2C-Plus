@@ -87,44 +87,121 @@ jobs:
         echo "=== Feeds 状态 (前20个) ==="
         ./scripts/feeds list | head -20
 
+    - name: Fix script line endings
+      run: |
+        echo "=== 修复脚本行尾格式 ==="
+        # 修复仓库中所有脚本的行尾格式
+        find . -name "*.sh" -type f -exec sed -i 's/\r$//' {} \;
+        find . -name "*.patch" -type f -exec sed -i 's/\r$//' {} \;
+        
+        # 进入OpenWrt目录修复脚本
+        cd istoreos/openwrt
+        
+        # 修复自定义脚本的行尾格式
+        if [ -f "../../scripts/apply_patches.sh" ]; then
+          sed -i 's/\r$//' ../../scripts/apply_patches.sh
+          chmod +x ../../scripts/apply_patches.sh
+        fi
+        
+        if [ -f "../../scripts/custom_scripts.sh" ]; then
+          sed -i 's/\r$//' ../../scripts/custom_scripts.sh
+          chmod +x ../../scripts/custom_scripts.sh
+        fi
+        
+        echo "行尾格式修复完成"
+
     - name: Apply R2C Plus patches
       run: |
         cd istoreos/openwrt
+        echo "=== 应用R2C Plus补丁 ==="
+        
+        # 确保脚本可执行
         chmod +x ../../scripts/apply_patches.sh
+        
+        # 应用补丁
         ../../scripts/apply_patches.sh
+        
+        echo "补丁应用完成"
 
     - name: Run custom scripts
       run: |
         cd istoreos/openwrt
+        echo "=== 运行自定义脚本 ==="
+        
+        # 确保脚本可执行
         chmod +x ../../scripts/custom_scripts.sh
+        
+        # 运行自定义脚本
         ../../scripts/custom_scripts.sh
+        
+        echo "自定义脚本执行完成"
 
     - name: Copy configuration
       run: |
         cd istoreos/openwrt
+        echo "=== 复制配置文件 ==="
+        
         cp ../../$CONFIG_FILE .config
         sed -i "s/CONFIG_TARGET_IP_ADDR=.*/CONFIG_TARGET_IP_ADDR=\"$LAN_IP\"/" .config
         sed -i "s/CONFIG_TARGET_NETMASK=.*/CONFIG_TARGET_NETMASK=\"$LAN_NETMASK\"/" .config
+        
+        echo "应用默认配置..."
         make defconfig
+        
+        echo "生成差异配置..."
         ./scripts/diffconfig.sh > diffconfig.log
-        cat diffconfig.log
+        
+        echo "=== 当前配置摘要 ==="
+        cat diffconfig.log | head -50
 
     - name: Download packages
       run: |
         cd istoreos/openwrt
         echo "=== 开始下载包 ==="
-        make -j$(nproc) download || make -j1 V=s download
+        
+        # 首先尝试多线程下载
+        make -j$(nproc) download || {
+          echo "多线程下载失败，尝试单线程下载..."
+          make -j1 V=s download
+        }
+        
         echo "=== 验证下载完整性 ==="
         make -j1 V=s download
+        
+        echo "包下载完成"
 
     - name: Build firmware
       run: |
         cd istoreos/openwrt
         echo "=== 开始编译固件 ==="
+        echo "使用 $(($(nproc) + 1)) 个线程进行编译"
+        
+        # 尝试多线程编译
         make -j$(($(nproc) + 1)) V=s 2>&1 | tee build.log || {
           echo "多线程编译失败，尝试单线程编译..."
           make -j1 V=s 2>&1 | tee build-single.log
         }
+        
+        echo "编译完成"
+
+    - name: Print build log on failure
+      if: failure()
+      run: |
+        cd istoreos/openwrt
+        set -euo pipefail
+        
+        echo "=== 编译失败，检查日志 ==="
+        
+        # 检查构建日志
+        if [ -f "build.log" ]; then
+          echo "=== build.log 最后100行 ==="
+          tail -100 build.log
+        fi
+        
+        if [ -f "build-single.log" ]; then
+          echo "=== build-single.log 最后100行 ==="
+          tail -100 build-single.log
+        fi
 
     - name: Print feed dump logs
       if: failure()
@@ -132,16 +209,24 @@ jobs:
         cd istoreos/openwrt
         set -euo pipefail
         shopt -s globstar nullglob || true
+        
         echo "=== 开始收集feed错误日志 ==="
-        for f in logs/feeds/**/dump.txt; do
-          echo "========== $f =========="
-          if [ -f "$f" ]; then
-            head -200 "$f" || cat "$f"
-          else
-            echo "文件不存在: $f"
-          fi
-          echo ""
-        done
+        
+        # 检查是否存在dump文件
+        if compgen -G "logs/feeds/**/dump.txt" > /dev/null; then
+          for f in logs/feeds/**/dump.txt; do
+            echo "========== $f =========="
+            if [ -f "$f" ]; then
+              head -200 "$f" || cat "$f"
+            else
+              echo "文件不存在: $f"
+            fi
+            echo ""
+          done
+        else
+          echo "未找到feed dump文件"
+        fi
+        
         echo "=== feed错误日志收集完成 ==="
 
     - name: Upload feed dump logs
@@ -156,12 +241,24 @@ jobs:
       if: success()
       run: |
         cd istoreos/openwrt
+        echo "=== 收集编译产物 ==="
+        
         mkdir -p ../../artifacts
-        find bin/targets -name "*.img*" -o -name "*.bin*" -o -name "*.gz*" | xargs -I {} cp {} ../../artifacts/
-        cp .config ../../artifacts/
+        
+        # 查找并复制固件文件
+        echo "查找固件文件..."
+        find bin/targets -name "*.img*" -o -name "*.bin*" -o -name "*.gz*" 2>/dev/null | while read file; do
+          echo "复制: $file"
+          cp "$file" ../../artifacts/
+        done
+        
+        # 复制日志和配置文件
+        cp .config ../../artifacts/ 2>/dev/null || true
         cp build.log ../../artifacts/ 2>/dev/null || true
         cp build-single.log ../../artifacts/ 2>/dev/null || true
         cp diffconfig.log ../../artifacts/ 2>/dev/null || true
+        
+        # 创建构建信息文件
         echo "Build date: $(date)" > ../../artifacts/build-info.txt
         echo "Git commit: $GITHUB_SHA" >> ../../artifacts/build-info.txt
         echo "Device: $DEVICE" >> ../../artifacts/build-info.txt
@@ -170,6 +267,10 @@ jobs:
         echo "iStoreOS branch: main" >> ../../artifacts/build-info.txt
         echo "FriendlyWrt branch: master-v24.10" >> ../../artifacts/build-info.txt
         echo "iStore feed: linkease/istore" >> ../../artifacts/build-info.txt
+        
+        # 显示收集到的文件
+        echo "=== 收集到的文件 ==="
+        ls -la ../../artifacts/
 
     - name: Upload firmware artifacts
       if: success()
@@ -179,3 +280,35 @@ jobs:
         path: artifacts/*
         retention-days: 30
         if-no-files-found: error
+
+    - name: Create GitHub Release
+      if: success() && github.event_name == 'workflow_dispatch'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: artifacts/*
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+        tag_name: v${{ github.event.inputs.version || github.run_number }}
+        name: R2C Plus iStoreOS v${{ github.event.inputs.version || github.run_number }}
+        body: |
+          # R2C Plus iStoreOS 定制固件
+          
+          ## 构建信息
+          - 构建时间: $(date)
+          - 设备: ${{ env.DEVICE }}
+          - 默认IP: ${{ env.LAN_IP }}
+          - OpenWrt版本: 24.10
+          
+          ## 主要特性
+          - 基于 iStoreOS 和 FriendlyWrt 24.10
+          - 集成 iStore 应用商店
+          - Docker 容器支持
+          - 默认主题: Argon
+          - 包含常用网络工具
+          
+          ## 刷机说明
+          1. 使用 balenaEtcher 将固件写入 SD 卡
+          2. 插入 R2C Plus 并启动
+          3. 访问 http://${{ env.LAN_IP }}
+          4. 用户名: root, 密码: admin
