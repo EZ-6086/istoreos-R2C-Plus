@@ -2,26 +2,26 @@
 
 基于 iStoreOS 和 FriendlyWrt 24.10 的定制固件，专为 NanoPi R2C Plus 优化。
 
-## 特性
+##特性
 
-- ✅ 默认IP地址：192.168.101.1
-- ✅ 集成 iStore 应用商店
-- ✅ FriendlyWrt 24.10 兼容性
-- ✅ Docker 容器支持
-- ✅ iStoreX 插件系统
-- ✅ Argon 主题界面
-- ✅ 完整的 USB 网卡驱动
-- ✅ 性能优化配置
+-✅ 默认IP地址：192.168.101.1
+-✅ 集成 iStore 应用商店
+-✅ FriendlyWrt 24.10 兼容性
+-✅ Docker 容器支持
+-✅ iStoreX 插件系统
+-✅ Argon 主题界面
+-✅ 完整的 USB 网卡驱动
+-✅ 性能优化配置
 
-## 快速开始
+##快速开始
 
 ### 编译固件
 
-1. Fork 本仓库
+1. 分叉 本仓库
 2. 进入仓库的 Actions 页面
-3. 选择 "Build iStoreOS for R2C Plus" 工作流
+3. 选择 "为 R2C Plus 构建 iStoreOS" 工作流
 4. 点击 "Run workflow" 开始编译
-5. 等待约2-3小时完成编译
+5.等待约2-3小时完成编译
 6. 在 Artifacts 中下载固件
 
 ### 刷机步骤
@@ -29,20 +29,20 @@
 1. 使用 balenaEtcher 将固件写入 SD 卡
 2. 将 SD 卡插入 R2C Plus
 3. 连接网络：
-   - LAN 口: eth0 (192.168.101.1)
+   - 本地网络接口: eth0 (192.168.101.1)
    - USB 网卡: eth1 (WAN口，自动获取IP)
 4. 上电启动
 5. 访问 http://192.168.101.1
 6. 用户名: root
-7. 密码: admin
+7. 密码: 管理员
 
-## 默认配置
+##默认配置
 
 - **管理地址**: 192.168.101.1
 - **用户名**: root
-- **密码**: admin
+- **密码**: 管理员
 - **DHCP 范围**: 192.168.101.100 - 192.168.101.250
-- **时区**: Asia/Shanghai (CST-8)
+- **时区**: 亚洲/上海 (CST-8)
 - **语言**: 简体中文
 
 ## 包含的软件包
@@ -50,9 +50,9 @@
 - iStore 应用商店
 - Docker & Docker Compose
 - Samba4 文件共享
-- AdGuard Home
-- SmartDNS
-- WireGuard VPN
+- AdGuard 家庭版
+- 智能DNS
+-WireGuard VPN
 - OpenVPN
 - Aria2 下载器
 - 网络监控工具
@@ -70,7 +70,7 @@
 │ └── custom_scripts.sh # 自定义配置脚本
 └── README.md # 说明文档
 
-## 自定义配置
+##自定义配置
 
 可以通过修改以下文件自定义固件：
 
@@ -121,3 +121,4 @@ A: 确保已安装正确的驱动：
 - [OpenWrt](https://openwrt.org/)
 
 - [FriendlyARM](https://www.friendlyarm.com/)
+
