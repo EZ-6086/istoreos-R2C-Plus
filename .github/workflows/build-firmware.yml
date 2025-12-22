@@ -44,6 +44,12 @@ jobs:
         echo "CCACHE_DIR=$GITHUB_WORKSPACE/ccache" >> $GITHUB_ENV
         ccache -o max_size=5G
 
+    - name: Install Python dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        pip install pyelftools
+
+
     - name: Prepare toolchain
       run: |
         git config --global user.name "GitHub Actions"
@@ -311,4 +317,5 @@ jobs:
           1. 使用 balenaEtcher 将固件写入 SD 卡
           2. 插入 R2C Plus 并启动
           3. 访问 http://${{ env.LAN_IP }}
+
           4. 用户名: root, 密码: admin
