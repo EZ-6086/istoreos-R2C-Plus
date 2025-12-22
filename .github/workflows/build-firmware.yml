@@ -22,7 +22,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 240
     strategy:
       matrix:
         include:
@@ -40,7 +40,7 @@ jobs:
     - name: Set up environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk gettext git java-propose-classpath libelf-dev libncurses5-dev libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools python3-dev python3-pip rsync subversion swig time xsltproc zlib1g-dev binutils bzip2 flex gcc-multilib g++-multilib gperf unzip libxml-parser-perl mercurial wget curl mc tree
+        sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk gettext git java-propose-classpath libelf-dev libncurses5-dev libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools python3-dev python3-pip rsync subversion swig time xsltproc zlib1g-dev binutils bzip2 flex gcc-multilib g++-multilib gperf unzip libxml-parser-perl mercurial wget curl mc tree dos2unix
         echo "CCACHE_DIR=$GITHUB_WORKSPACE/ccache" >> $GITHUB_ENV
         ccache -o max_size=5G
 
@@ -53,7 +53,7 @@ jobs:
       run: |
         git clone https://github.com/istoreos/istoreos.git --depth=1 -b main
         cd istoreos
-        git clone https://git.openwrt.org/openwrt/openwrt.git --depth=1 -b openwrt-22.03 openwrt
+        git clone https://git.openwrt.org/openwrt/openwrt.git --depth=1 -b openwrt-24.10 openwrt
         cd openwrt
 
     - name: Configure feeds
@@ -67,6 +67,13 @@ jobs:
           echo 'src-git routing https://git.openwrt.org/feed/routing.git'
           echo 'src-git telephony https://git.openwrt.org/feed/telephony.git'
         } > "$FEEDS_CONF"
+        
+        # 修复feed的换行符
+        find . -type f -name "Makefile" -o -name "*.mk" | xargs -I {} dos2unix {} 2>/dev/null || true
+
+    - name: Update and install feeds
+      run: |
+        cd istoreos/openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         ./scripts/feeds install istore
@@ -82,6 +89,20 @@ jobs:
         cd istoreos/openwrt
         chmod +x ../../scripts/custom_scripts.sh
         ../../scripts/custom_scripts.sh
+
+    - name: Fix feed Makefiles
+      run: |
+        cd istoreos/openwrt
+        # 检查并修复可能的Makefile问题
+        if [ -d "feeds/friendlywrt" ]; then
+          find feeds/friendlywrt -type f -name "Makefile" | while read file; do
+            echo "检查文件: $file"
+            # 修复CRLF换行符
+            dos2unix "$file" 2>/dev/null || true
+            # 确保文件不以空行结尾
+            sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$file"
+          done
+        fi
 
     - name: Copy configuration
       run: |
@@ -107,7 +128,34 @@ jobs:
           make -j1 V=s 2>&1 | tee build-single.log
         }
 
+    - name: Print feed dump logs
+      if: failure()
+      run: |
+        cd istoreos/openwrt
+        set -euo pipefail
+        shopt -s globstar nullglob || true
+        echo "=== 开始收集feed错误日志 ==="
+        for f in logs/feeds/**/dump.txt; do
+          echo "========== $f =========="
+          if [ -f "$f" ]; then
+            head -200 "$f" || cat "$f"
+          else
+            echo "文件不存在: $f"
+          fi
+          echo ""
+        done
+        echo "=== feed错误日志收集完成 ==="
+
+    - name: Upload feed dump logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: feed-dump-logs-${{ github.run_id }}
+        path: istoreos/openwrt/logs/feeds/**/dump.txt
+        retention-days: 7
+
     - name: Collect artifacts
+      if: success()
       run: |
         cd istoreos/openwrt
         mkdir -p ../../artifacts
@@ -115,17 +163,20 @@ jobs:
         cp .config ../../artifacts/
         cp build.log ../../artifacts/ 2>/dev/null || true
         cp build-single.log ../../artifacts/ 2>/dev/null || true
+        cp diffconfig.log ../../artifacts/ 2>/dev/null || true
         echo "Build date: $(date)" > ../../artifacts/build-info.txt
         echo "Git commit: $GITHUB_SHA" >> ../../artifacts/build-info.txt
         echo "Device: $DEVICE" >> ../../artifacts/build-info.txt
         echo "LAN IP: $LAN_IP" >> ../../artifacts/build-info.txt
+        echo "OpenWrt version: 22.03" >> ../../artifacts/build-info.txt
+        echo "iStoreOS branch: main" >> ../../artifacts/build-info.txt
+        echo "FriendlyWrt branch: master-22.03" >> ../../artifacts/build-info.txt
 
-    - name: Upload artifacts
+    - name: Upload firmware artifacts
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.DEVICE }}-firmware-${{ github.run_id }}
         path: artifacts/*
         retention-days: 30
         if-no-files-found: error
-
-
