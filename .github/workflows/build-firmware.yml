@@ -2,13 +2,13 @@ name: Build iStoreOS for R2C Plus
 
 on:
   push:
-    branches: [main, develop]
+    branches: [ main, develop ]
   workflow_dispatch:
     inputs:
       version:
         description: '固件版本号'
         required: false
-        default: 'auto'
+        default: '$(date +%Y%m%d)'
 
 env:
   DEVICE: nanopi-r2c-plus
@@ -16,14 +16,13 @@ env:
   LAN_NETMASK: 255.255.255.0
   LAN_DHCP_START: 100
   LAN_DHCP_END: 250
-  # 使用完整路径避免混淆
-  WORKSPACE: ${{ github.workspace }}
+  FEEDS_CONF: feeds.conf
+  CONFIG_FILE: configs/r2cplus.config
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240  # 适当延长超时时间
-    
+    timeout-minutes: 180
     strategy:
       matrix:
         include:
@@ -32,15 +31,6 @@ jobs:
             subtarget: rockchip_armv8
 
     steps:
-    - name: Generate version
-      id: version
-      run: |
-        if [[ "${{ github.event.inputs.version }}" == "auto" || -z "${{ github.event.inputs.version }}" ]]; then
-          echo "VERSION=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
-        else
-          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-        fi
-
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
@@ -50,195 +40,90 @@ jobs:
     - name: Set up environment
       run: |
         sudo apt-get update
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-          build-essential \
-          ccache \
-          ecj \
-          fastjar \
-          file \
-          g++ \
-          gawk \
-          gettext \
-          git \
-          java-propose-classpath \
-          libelf-dev \
-          libncurses5-dev \
-          libncursesw5-dev \
-          libssl-dev \
-          python3 \
-          python3-distutils \
-          python3-setuptools \
-          python3-dev \
-          python3-pip \
-          rsync \
-          subversion \
-          swig \
-          time \
-          xsltproc \
-          zlib1g-dev \
-          binutils \
-          bzip2 \
-          flex \
-          gcc-multilib \
-          g++-multilib \
-          gperf \
-          unzip \
-          libxml-parser-perl \
-          mercurial \
-          wget \
-          curl \
-          tree
-        
-        # 设置ccache
-        sudo ccache -M 10G
-        ccache -s
+        sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk gettext git java-propose-classpath libelf-dev libncurses5-dev libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools python3-dev python3-pip rsync subversion swig time xsltproc zlib1g-dev binutils bzip2 flex gcc-multilib g++-multilib gperf unzip libxml-parser-perl mercurial wget curl mc tree
+        echo "CCACHE_DIR=$GITHUB_WORKSPACE/ccache" >> $GITHUB_ENV
+        ccache -o max_size=5G
 
-    - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1
-      with:
-        key: ${{ runner.os }}-istoreos-${{ env.DEVICE }}-${{ github.sha }}
-        max-size: 500M
+    - name: Prepare toolchain
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
 
     - name: Clone iStoreOS source
       run: |
-        git clone https://github.com/istoreos/istoreos.git --depth=1 -b main istoreos
+        git clone https://github.com/istoreos/istoreos.git --depth=1 -b main
         cd istoreos
         git clone https://git.openwrt.org/openwrt/openwrt.git --depth=1 -b openwrt-22.03 openwrt
+        cd openwrt
 
     - name: Configure feeds
       run: |
-        cd ${{ github.workspace }}/istoreos/openwrt
-        cat > feeds.conf << 'EOF'
-src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;master-24.10
-src-git istore https://github.com/istoreos/istore.git;main
-src-git packages https://git.openwrt.org/feed/packages.git^e0e38e7f3a8b6b7d1a34d0c6b4e5e6f7a8b9c0d1
-src-git luci https://git.openwrt.org/project/luci.git^a1b2c3d4e5f67890
-src-git routing https://git.openwrt.org/feed/routing.git
-src-git telephony https://git.openwrt.org/feed/telephony.git
-EOF
+        cd istoreos/openwrt
+        {
+          echo 'src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;master-24.10'
+          echo 'src-git istore https://github.com/istoreos/istore.git;main'
+          echo 'src-git packages https://git.openwrt.org/feed/packages.git^e0e38e7f3a8b6b7d1a34d0c6b4e5e6f7a8b9c0d1'
+          echo 'src-git luci https://git.openwrt.org/project/luci.git^a1b2c3d4e5f67890'
+          echo 'src-git routing https://git.openwrt.org/feed/routing.git'
+          echo 'src-git telephony https://git.openwrt.org/feed/telephony.git'
+        } > "$FEEDS_CONF"
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         ./scripts/feeds install istore
 
     - name: Apply R2C Plus patches
       run: |
-        cd ${{ github.workspace }}
-        chmod +x scripts/apply_patches.sh
-        scripts/apply_patches.sh
+        cd istoreos/openwrt
+        chmod +x ../../scripts/apply_patches.sh
+        ../../scripts/apply_patches.sh
 
     - name: Run custom scripts
       run: |
-        cd ${{ github.workspace }}
-        chmod +x scripts/custom_scripts.sh
-        scripts/custom_scripts.sh
+        cd istoreos/openwrt
+        chmod +x ../../scripts/custom_scripts.sh
+        ../../scripts/custom_scripts.sh
 
-    - name: Copy and configure
+    - name: Copy configuration
       run: |
-        cd ${{ github.workspace }}/istoreos/openwrt
-        cp ../../configs/r2cplus.config .config
-        
-        # 检查配置文件是否存在所需变量
-        if ! grep -q "CONFIG_TARGET_IP_ADDR" .config; then
-          echo "CONFIG_TARGET_IP_ADDR=\"$LAN_IP\"" >> .config
-        else
-          sed -i "s|CONFIG_TARGET_IP_ADDR=.*|CONFIG_TARGET_IP_ADDR=\"$LAN_IP\"|" .config
-        fi
-        
-        if ! grep -q "CONFIG_TARGET_NETMASK" .config; then
-          echo "CONFIG_TARGET_NETMASK=\"$LAN_NETMASK\"" >> .config
-        else
-          sed -i "s|CONFIG_TARGET_NETMASK=.*|CONFIG_TARGET_NETMASK=\"$LAN_NETMASK\"|" .config
-        fi
-        
+        cd istoreos/openwrt
+        cp ../../$CONFIG_FILE .config
+        sed -i "s/CONFIG_TARGET_IP_ADDR=.*/CONFIG_TARGET_IP_ADDR=\"$LAN_IP\"/" .config
+        sed -i "s/CONFIG_TARGET_NETMASK=.*/CONFIG_TARGET_NETMASK=\"$LAN_NETMASK\"/" .config
         make defconfig
         ./scripts/diffconfig.sh > diffconfig.log
         cat diffconfig.log
 
     - name: Download packages
       run: |
-        cd ${{ github.workspace }}/istoreos/openwrt
-        # 并行下载，失败时重试
-        make -j$(nproc) download || make -j$(nproc) download
-        # 验证下载完整性
-        make -j1 V=s download 2>&1 | tee download.log
+        cd istoreos/openwrt
+        make -j$(nproc) download || make -j1 V=s download
+        make -j1 V=s download
 
     - name: Build firmware
       run: |
-        cd ${{ github.workspace }}/istoreos/openwrt
-        # 使用ccache加速编译
-        export CCACHE_DIR=/home/runner/.ccache
-        export CCACHE_BASEDIR=$PWD
-        
-        # 编译内核
-        make -j$(($(nproc) + 1)) target/compile 2>&1 | tee kernel-build.log
-        
-        # 编译固件
-        if ! make -j$(($(nproc) + 1)) V=s 2>&1 | tee build.log; then
-          echo "Parallel build failed, trying single thread..."
+        cd istoreos/openwrt
+        make -j$(($(nproc) + 1)) V=s 2>&1 | tee build.log || {
+          echo "Build failed, trying single thread..."
           make -j1 V=s 2>&1 | tee build-single.log
-          if [ $? -ne 0 ]; then
-            echo "Build failed!"
-            exit 1
-          fi
-        fi
+        }
 
     - name: Collect artifacts
       run: |
-        cd ${{ github.workspace }}
-        mkdir -p artifacts
-        
-        # 查找固件文件
-        find istoreos/openwrt/bin/targets -type f \( -name "*.img" -o -name "*.bin" -o -name "*.gz" \) -exec cp {} artifacts/ \;
-        
-        # 复制配置文件
-        cp istoreos/openwrt/.config artifacts/
-        cp istoreos/openwrt/diffconfig.log artifacts/ 2>/dev/null || true
-        
-        # 复制日志文件
-        for log in build.log build-single.log kernel-build.log download.log; do
-          if [ -f "istoreos/openwrt/$log" ]; then
-            cp "istoreos/openwrt/$log" artifacts/
-          fi
-        done
-        
-        # 创建构建信息
-        cat > artifacts/build-info.txt << EOF
-Build date: $(date)
-Git commit: $GITHUB_SHA
-Git ref: $GITHUB_REF
-Device: ${{ env.DEVICE }}
-Version: ${{ steps.version.outputs.VERSION }}
-LAN IP: ${{ env.LAN_IP }}
-LAN Netmask: ${{ env.LAN_NETMASK }}
-EOF
-        
-        # 显示生成的文件
-        ls -la artifacts/
-        find istoreos/openwrt/bin/targets -type f | head -20
+        cd istoreos/openwrt
+        mkdir -p ../../artifacts
+        find bin/targets -name "*.img*" -o -name "*.bin*" -o -name "*.gz*" | xargs -I {} cp {} ../../artifacts/
+        cp .config ../../artifacts/
+        cp build.log ../../artifacts/ 2>/dev/null || true
+        cp build-single.log ../../artifacts/ 2>/dev/null || true
+        echo "Build date: $(date)" > ../../artifacts/build-info.txt
+        echo "Git commit: $GITHUB_SHA" >> ../../artifacts/build-info.txt
+        echo "Device: $DEVICE" >> ../../artifacts/build-info.txt
+        echo "LAN IP: $LAN_IP" >> ../../artifacts/build-info.txt
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.DEVICE }}-firmware-${{ steps.version.outputs.VERSION }}
-        path: |
-          artifacts/*
+        name: ${{ env.DEVICE }}-firmware-${{ github.run_id }}
+        path: artifacts/*
         retention-days: 30
         if-no-files-found: error
-
-    - name: Create Release
-      if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ env.DEVICE }}-${{ steps.version.outputs.VERSION }}
-        name: iStoreOS for ${{ env.DEVICE }} (${{ steps.version.outputs.VERSION }})
-        body: |
-          Build for ${{ env.DEVICE }}
-          Version: ${{ steps.version.outputs.VERSION }}
-          Build date: $(date)
-          Git commit: ${{ github.sha }}
-        files: artifacts/*
-        draft: false
-        prerelease: false
-        generate_release_notes: true
