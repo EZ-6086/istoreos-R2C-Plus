@@ -62,21 +62,30 @@ jobs:
         {
           echo 'src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;master-v24.10'
           echo 'src-git istore https://github.com/linkease/istore.git;main'
-          echo 'src-git packages https://git.openwrt.org/feed/packages.git^e0e38e7f3a8b6b7d1a34d0c6b4e5e6f7a8b9c0d1'
-          echo 'src-git luci https://git.openwrt.org/project/luci.git^a1b2c3d4e5f67890'
-          echo 'src-git routing https://git.openwrt.org/feed/routing.git'
-          echo 'src-git telephony https://git.openwrt.org/feed/telephony.git'
+          echo 'src-git packages https://git.openwrt.org/feed/packages.git;openwrt-24.10'
+          echo 'src-git luci https://git.openwrt.org/project/luci.git;openwrt-24.10'
+          echo 'src-git routing https://git.openwrt.org/feed/routing.git;openwrt-24.10'
+          echo 'src-git telephony https://git.openwrt.org/feed/telephony.git;openwrt-24.10'
         } > "$FEEDS_CONF"
         
-        # 修复feed的换行符
-        find . -type f -name "Makefile" -o -name "*.mk" | xargs -I {} dos2unix {} 2>/dev/null || true
+        # 显示feeds配置
+        echo "=== 当前feeds配置 ==="
+        cat "$FEEDS_CONF"
 
     - name: Update and install feeds
       run: |
         cd istoreos/openwrt
+        echo "=== 开始更新feeds ==="
         ./scripts/feeds update -a
+        
+        echo "=== 开始安装feeds ==="
         ./scripts/feeds install -a
+        
+        echo "=== 安装iStore feed ==="
         ./scripts/feeds install istore
+        
+        echo "=== Feeds 状态 (前20个) ==="
+        ./scripts/feeds list | head -20
 
     - name: Apply R2C Plus patches
       run: |
@@ -89,20 +98,6 @@ jobs:
         cd istoreos/openwrt
         chmod +x ../../scripts/custom_scripts.sh
         ../../scripts/custom_scripts.sh
-
-    - name: Fix feed Makefiles
-      run: |
-        cd istoreos/openwrt
-        # 检查并修复可能的Makefile问题
-        if [ -d "feeds/friendlywrt" ]; then
-          find feeds/friendlywrt -type f -name "Makefile" | while read file; do
-            echo "检查文件: $file"
-            # 修复CRLF换行符
-            dos2unix "$file" 2>/dev/null || true
-            # 确保文件不以空行结尾
-            sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$file"
-          done
-        fi
 
     - name: Copy configuration
       run: |
@@ -117,14 +112,17 @@ jobs:
     - name: Download packages
       run: |
         cd istoreos/openwrt
+        echo "=== 开始下载包 ==="
         make -j$(nproc) download || make -j1 V=s download
+        echo "=== 验证下载完整性 ==="
         make -j1 V=s download
 
     - name: Build firmware
       run: |
         cd istoreos/openwrt
+        echo "=== 开始编译固件 ==="
         make -j$(($(nproc) + 1)) V=s 2>&1 | tee build.log || {
-          echo "Build failed, trying single thread..."
+          echo "多线程编译失败，尝试单线程编译..."
           make -j1 V=s 2>&1 | tee build-single.log
         }
 
@@ -168,9 +166,10 @@ jobs:
         echo "Git commit: $GITHUB_SHA" >> ../../artifacts/build-info.txt
         echo "Device: $DEVICE" >> ../../artifacts/build-info.txt
         echo "LAN IP: $LAN_IP" >> ../../artifacts/build-info.txt
-        echo "OpenWrt version: 22.03" >> ../../artifacts/build-info.txt
+        echo "OpenWrt version: 24.10" >> ../../artifacts/build-info.txt
         echo "iStoreOS branch: main" >> ../../artifacts/build-info.txt
-        echo "FriendlyWrt branch: master-22.03" >> ../../artifacts/build-info.txt
+        echo "FriendlyWrt branch: master-v24.10" >> ../../artifacts/build-info.txt
+        echo "iStore feed: linkease/istore" >> ../../artifacts/build-info.txt
 
     - name: Upload firmware artifacts
       if: success()
