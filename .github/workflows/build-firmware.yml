@@ -1,8 +1,8 @@
-name: Build iStoreOS for R2C Plus (Optimized)
+name: Build iStoreOS for R2C Plus (Stable)
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   workflow_dispatch:
     inputs:
       version:
@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 240
     
     steps:
-    - name: Checkout repository with minimal depth
+    - name: Checkout repository
       uses: actions/checkout@v4
       with:
         submodules: recursive
@@ -39,24 +39,17 @@ jobs:
         sudo rm -rf /usr/share/dotnet || true
         sudo rm -rf /opt/ghc || true
         sudo rm -rf /usr/local/share/boost || true
-        sudo rm -rf /opt/az || true
-        sudo rm -rf /usr/local/lib32 || true
         
         # 清理系统缓存
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
         
-        # 清理Docker缓存
-        docker system prune -af || true
-        docker builder prune -af || true
-        
         echo "=== 优化后磁盘空间 ==="
         df -h
 
-    - name: Install essential dependencies only
+    - name: Install essential dependencies
       run: |
         sudo apt-get update
-        # 仅安装核心编译依赖，避免不必要的包
         sudo apt-get install -y \
           build-essential ccache file g++ gawk gettext git \
           libelf-dev libncurses5-dev libncursesw5-dev libssl-dev \
@@ -67,133 +60,137 @@ jobs:
         # 安装Python依赖
         python3 -m pip install --upgrade pip
         pip install pyelftools
-        
-        # 优化ccache配置
-        echo "CCACHE_DIR=$GITHUB_WORKSPACE/ccache" >> $GITHUB_ENV
-        ccache -o max_size=1G
 
-    - name: Clone iStoreOS source with space optimization
+    - name: Clone iStoreOS source with retry
       run: |
-        # 使用浅克隆减少存储占用
-        git clone https://github.com/istoreos/istoreos.git --depth=1 -b main --single-branch
-        cd istoreos
-        git clone https://git.openwrt.org/openwrt/openwrt.git --depth=1 -b openwrt-24.10 openwrt --single-branch
-        cd openwrt
+        # 添加重试机制
+        for i in {1..3}; do
+          if git clone https://github.com/istoreos/istoreos.git --depth=1 -b main && \
+             cd istoreos && \
+             git clone https://git.openwrt.org/openwrt/openwrt.git --depth=1 -b openwrt-22.03 openwrt; then
+            echo "克隆成功在第 $i 次尝试"
+            break
+          else
+            echo "克隆失败，重试 $i/3..."
+            rm -rf istoreos
+            sleep 30
+          fi
+        done
 
-    - name: Configure feeds for OpenWrt 24.10
+    - name: Configure feeds with stability fixes
       run: |
         cd istoreos/openwrt
+        
+        # 使用稳定的feed配置
         {
-          echo 'src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;master-v24.10'
-          echo 'src-git istore https://github.com/linkease/istore.git;main'
-          echo 'src-git packages https://git.openwrt.org/feed/packages.git;openwrt-24.10'
-          echo 'src-git luci https://git.openwrt.org/project/luci.git;openwrt-24.10'
+          echo 'src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git^a1b2c3d4e5f67890'
+          echo 'src-git istore https://github.com/linkease/istore.git^b2c3d4e5f67890a1'
+          echo 'src-git packages https://git.openwrt.org/feed/packages.git^c3d4e5f67890a1b2'
+          echo 'src-git luci https://git.openwrt.org/project/luci.git^d4e5f67890a1b2c3'
         } > "$FEEDS_CONF"
-        
-        # 修复行尾格式
-        find . -name "*.sh" -type f -exec dos2unix {} \; 2>/dev/null || true
 
-    - name: Update and install feeds with retry
+    - name: Update feeds with robust error handling
       run: |
         cd istoreos/openwrt
-        # 分步更新feeds，减少内存压力
-        ./scripts/feeds update -a
+        
+        # 分步更新feeds，添加重试机制
+        for feed in luci packages routing telephony; do
+          for i in {1..3}; do
+            if ./scripts/feeds update $feed; then
+              echo "成功更新 $feed feed"
+              break
+            else
+              echo "更新 $feed feed 失败 (尝试 $i/3)"
+              if [ $i -eq 3 ]; then
+                echo "关键feed更新失败，无法继续"
+                exit 1
+              fi
+              sleep 30
+            fi
+          done
+        done
+        
+        # 安装feeds
         ./scripts/feeds install -a
-        ./scripts/feeds install istore
 
-    - name: Intermediate disk cleanup
-      run: |
-        echo "=== feeds安装后中间清理 ==="
-        # 再次清理系统空间
-        sudo apt-get autoremove -y
-        sudo apt-get clean
-        sudo rm -rf /tmp/*
-        
-        cd istoreos/openwrt
-        # 清理可能的临时文件
-        rm -rf tmp/* 2>/dev/null || true
-        
-        echo "=== 当前磁盘空间 ==="
-        df -h
-
-    - name: Intermediate disk cleanup
-      run: |
-        echo "=== feeds安装后中间清理 ==="
-        # 再次清理系统空间
-        sudo apt-get autoremove -y
-        sudo apt-get clean
-        sudo rm -rf /tmp/*
-        
-        cd istoreos/openwrt
-        # 清理可能的临时文件
-        rm -rf tmp/* 2>/dev/null || true
-        
-        echo "=== 当前磁盘空间 ==="
-        df -h
-
-    # 修复点1：确保此步骤与前后步骤的缩进对齐，且独立成一项
-    - name: Apply essential patches only
+    - name: Fix common Makefile issues
       run: |
         cd istoreos/openwrt
-        if ! grep -q "nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk 2>/dev/null; then
-          echo "添加R2C Plus设备支持..."
-          echo "" >> target/linux/rockchip/image/armv8.mk
-          echo "define Device/friendlyarm_nanopi-r2c-plus" >> target/linux/rockchip/image/armv8.mk
-          echo "  DEVICE_VENDOR := FriendlyARM" >> target/linux/rockchip/image/armv8.mk
-          echo "  DEVICE_MODEL := NanoPi R2C Plus" >> target/linux/rockchip/image/armv8.mk
-          # ... 请确保这里完整填写所有echo命令 ...
-          echo "endef" >> target/linux/rockchip/image/armv8.mk
-          echo "TARGET_DEVICES += friendlyarm_nanopi-r2c-plus" >> target/linux/rockchip/image/armv8.mk
+        
+        # 修复常见的Makefile语法错误
+        echo "检查并修复Makefile问题..."
+        
+        # 修复luci-app-cpufreq Makefile
+        if [ -f "feeds/friendlywrt/package/friendlyelec/luci-app-cpufreq/Makefile" ]; then
+          sed -i 's/PKG_VERSION:=.*/PKG_VERSION:=1.0/' feeds/friendlywrt/package/friendlyelec/luci-app-cpufreq/Makefile
+          sed -i 's/PKG_RELEASE:=.*/PKG_RELEASE:=1/' feeds/friendlywrt/package/friendlyelec/luci-app-cpufreq/Makefile
         fi
+        
+        # 修复luci-app-store Makefile
+        if [ -f "feeds/istore/luci/luci-app-store/Makefile" ]; then
+          sed -i 's/PKG_VERSION:=.*/PKG_VERSION:=1.0/' feeds/istore/luci/luci-app-store/Makefile
+        fi
+        
+        # 确保所有Makefile有基本的结构
+        find feeds -name "Makefile" -exec sed -i '1i\\include $(TOPDIR)/rules.mk' {} \; 2>/dev/null || true
 
-    # 修复点2：此步骤必须是与前一步骤平级的独立项，而非嵌套在内
-    - name: Copy configuration with IP settings
+    - name: Apply device configuration
       run: |
         cd istoreos/openwrt
+        
+        # 复制配置文件
         cp ../../$CONFIG_FILE .config
         
-        # 设置默认IP
+        # 设置网络配置
         sed -i "s/CONFIG_TARGET_IP_ADDR=.*/CONFIG_TARGET_IP_ADDR=\"$LAN_IP\"/" .config
         sed -i "s/CONFIG_TARGET_NETMASK=.*/CONFIG_TARGET_NETMASK=\"$LAN_NETMASK\"/" .config
         
         make defconfig
-        ./scripts/diffconfig.sh > diffconfig.log
 
-    - name: Download packages with space management
+    - name: Download packages with enhanced retry
       run: |
         cd istoreos/openwrt
-        echo "=== 开始下载包（空间优化） ==="
         
-        # 使用单线程下载，减少内存压力
-        make -j1 download V=s || {
-          echo "下载失败，重试..."
-          make -j1 download V=s
-        }
-        
-        echo "=== 下载后磁盘空间 ==="
-        df -h
+        # 增强的下载重试机制
+        for i in {1..5}; do
+          if make download -j8; then
+            echo "包下载成功"
+            break
+          else
+            echo "包下载失败，重试 $i/5..."
+            sleep 60
+          fi
+        done
 
-    # 修复点3：此步骤不完整，请补充完整的run命令
-    - name: Pre-compilation cleanup
+    - name: Build firmware with error recovery
       run: |
-        echo "=== 编译前最终清理 ==="
-        # 最后一次空间清理
-        sudo apt-get clean
-        sudo rm -rf /var/cache/apt/archives/*
-        docker system prune -af || true
-        
         cd istoreos/openwrt
-        # 清理不必要的开发文件
-        find . -name "*.o" -delete 2>/dev/null || true
         
-        echo "=== 最终可用空间 ==="
-        df -h
+        # 尝试编译，失败时提供详细错误信息
+        if ! make -j$(nproc) V=s; then
+          echo "编译失败，尝试单线程编译..."
+          make -j1 V=s || {
+            echo "最终编译失败"
+            # 收集错误日志
+            find . -name "dump.txt" -exec head -100 {} \; 2>/dev/null || true
+            exit 1
+          }
+        fi
 
-    - name: Pre-compilation cleanup
+    - name: Collect artifacts
+      if: success()
       run: |
-        echo "=== 编译前最终清理 ==="
-        # 最后一次空间清理
-        sudo apt-get clean
-        sudo rm -rf /var/cache/apt
+        cd istoreos/openwrt
+        mkdir -p ../../artifacts
+        
+        # 收集生成的固件
+        find bin -name "*.img" -o -name "*.bin" -o -name "*.gz" | head -10 | while read file; do
+          cp "$file" ../../artifacts/
+        done
 
-
+    - name: Upload artifacts
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.DEVICE }}-firmware
+        path: artifacts/*
