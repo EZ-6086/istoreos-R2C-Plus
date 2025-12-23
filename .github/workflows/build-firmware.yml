@@ -116,19 +116,37 @@ jobs:
         echo "=== 当前磁盘空间 ==="
         df -h
 
-   - name: Apply essential patches only
-  run: |
-    cd istoreos/openwrt
-    if ! grep -q "nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk 2>/dev/null; then
-      echo "添加R2C Plus设备支持..."
-      echo "" >> target/linux/rockchip/image/armv8.mk
-      echo "define Device/friendlyarm_nanopi-r2c-plus" >> target/linux/rockchip/image/armv8.mk
-      echo "  DEVICE_VENDOR := FriendlyARM" >> target/linux/rockchip/image/armv8.mk
-      echo "  DEVICE_MODEL := NanoPi R2C Plus" >> target/linux/rockchip/image/armv8.mk
-      # ... 省略其他行 ...
-      echo "endef" >> target/linux/rockchip/image/armv8.mk
-      echo "TARGET_DEVICES += friendlyarm_nanopi-r2c-plus" >> target/linux/rockchip/image/armv8.mk
-    fi
+    - name: Intermediate disk cleanup
+      run: |
+        echo "=== feeds安装后中间清理 ==="
+        # 再次清理系统空间
+        sudo apt-get autoremove -y
+        sudo apt-get clean
+        sudo rm -rf /tmp/*
+        
+        cd istoreos/openwrt
+        # 清理可能的临时文件
+        rm -rf tmp/* 2>/dev/null || true
+        
+        echo "=== 当前磁盘空间 ==="
+        df -h
+
+    # 修复点1：确保此步骤与前后步骤的缩进对齐，且独立成一项
+    - name: Apply essential patches only
+      run: |
+        cd istoreos/openwrt
+        if ! grep -q "nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk 2>/dev/null; then
+          echo "添加R2C Plus设备支持..."
+          echo "" >> target/linux/rockchip/image/armv8.mk
+          echo "define Device/friendlyarm_nanopi-r2c-plus" >> target/linux/rockchip/image/armv8.mk
+          echo "  DEVICE_VENDOR := FriendlyARM" >> target/linux/rockchip/image/armv8.mk
+          echo "  DEVICE_MODEL := NanoPi R2C Plus" >> target/linux/rockchip/image/armv8.mk
+          # ... 请确保这里完整填写所有echo命令 ...
+          echo "endef" >> target/linux/rockchip/image/armv8.mk
+          echo "TARGET_DEVICES += friendlyarm_nanopi-r2c-plus" >> target/linux/rockchip/image/armv8.mk
+        fi
+
+    # 修复点2：此步骤必须是与前一步骤平级的独立项，而非嵌套在内
     - name: Copy configuration with IP settings
       run: |
         cd istoreos/openwrt
@@ -155,10 +173,27 @@ jobs:
         echo "=== 下载后磁盘空间 ==="
         df -h
 
+    # 修复点3：此步骤不完整，请补充完整的run命令
+    - name: Pre-compilation cleanup
+      run: |
+        echo "=== 编译前最终清理 ==="
+        # 最后一次空间清理
+        sudo apt-get clean
+        sudo rm -rf /var/cache/apt/archives/*
+        docker system prune -af || true
+        
+        cd istoreos/openwrt
+        # 清理不必要的开发文件
+        find . -name "*.o" -delete 2>/dev/null || true
+        
+        echo "=== 最终可用空间 ==="
+        df -h
+
     - name: Pre-compilation cleanup
       run: |
         echo "=== 编译前最终清理 ==="
         # 最后一次空间清理
         sudo apt-get clean
         sudo rm -rf /var/cache/apt
+
 
