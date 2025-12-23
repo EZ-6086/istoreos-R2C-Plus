@@ -83,15 +83,15 @@ jobs:
         
         # 使用稳定的feed配置
         {
-          echo 'src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git'
+          echo 'src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;master-v24.10'
           echo 'src-git istore https://github.com/linkease/istore.git'
-          echo 'src-git packages https://git.openwrt.org/feed/packages.git'
-          echo 'src-git luci https://git.openwrt.org/project/luci.git'
+          echo 'src-git packages https://git.openwrt.org/feed/packages.git;openwrt-24.10'
+          echo 'src-git luci https://git.openwrt.org/project/luci.git;openwrt-24.10'
         } > "$FEEDS_CONF"
 
     - name: Update feeds with robust error handling
       run: |
-        cd istoreos/istoreos
+        cd istoreos/openwrt
         
         # 分步更新feeds，添加重试机制
         for feed in luci packages routing telephony; do
@@ -115,7 +115,7 @@ jobs:
 
     - name: Fix common Makefile issues
       run: |
-        cd istoreos/istoreos
+        cd istoreos/openwrt
         
         # 修复常见的Makefile语法错误
         echo "检查并修复Makefile问题..."
