@@ -2,7 +2,7 @@ name: Build iStoreOS for R2C Plus (Stable)
 
 on:
   push:
-    branches: [main, develop]
+    branches: [ main, develop ]
   workflow_dispatch:
     inputs:
       version:
@@ -20,55 +20,52 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
-    
+    timeout-minutes: 300 # 延长超时时间
+
     steps:
+    # 第一步：检出代码
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v4 # 使用最新稳定版Action[2,5](@ref)
       with:
         submodules: recursive
         fetch-depth: 1
 
-    - name: Initial disk space optimization
+    # 第二步：初始磁盘清理（关键步骤）
+    - name: Initial disk space cleanup
       run: |
-        echo "=== 初始磁盘空间优化 ==="
+        echo "初始磁盘空间:"
         df -h
-        
-        # 清理系统预置的大型开发工具
-        sudo rm -rf /usr/local/lib/android || true
-        sudo rm -rf /usr/share/dotnet || true
-        sudo rm -rf /opt/ghc || true
-        sudo rm -rf /usr/local/share/boost || true
-        
-        # 清理系统缓存
+        echo "开始清理系统..."
         sudo apt-get clean
+        sudo rm -rf /usr/local/lib/android \
+                    /usr/share/dotnet \
+                    /opt/ghc \
+                    /opt/hostedtoolcache/CodeQL \
+                    /usr/local/lib/android \
+                    /opt/pipx
         sudo rm -rf /var/lib/apt/lists/*
-        
-        echo "=== 优化后磁盘空间 ==="
+        docker system prune -af || true
+        echo "清理后磁盘空间:"
         df -h
 
-    - name: Install essential dependencies
+    # 第三步：安装核心依赖
+    - name: Install core dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          build-essential ccache file g++ gawk gettext git \
-          libelf-dev libncurses5-dev libncursesw5-dev libssl-dev \
-          python3 python3-pip rsync subversion swig time \
-          xsltproc zlib1g-dev binutils bzip2 flex gperf unzip \
-          wget curl dos2unix
-        
-        # 安装Python依赖
-        python3 -m pip install --upgrade pip
+          build-essential ccache file gawk gettext git \
+          libncurses5-dev libncursesw5-dev libssl-dev python3 \
+          python3-pip subversion unzip wget curl zlib1g-dev
         pip install pyelftools
 
-    - name: Clone iStoreOS source with retry
+    # 第四步：克隆源码（带重试机制）
+    - name: Clone source code with retry
       run: |
-        # 添加重试机制
         for i in {1..3}; do
-          if git clone https://github.com/istoreos/istoreos.git --depth=1 -b main && \
+          if git clone --depth=1 -b main https://github.com/istoreos/istoreos.git && \
              cd istoreos && \
-             git clone https://git.openwrt.org/openwrt/openwrt.git --depth=1 -b openwrt-24.10 openwrt; then
-            echo "克隆成功在第 $i 次尝试"
+             git clone --depth=1 -b openwrt-24.10 https://git.openwrt.org/openwrt/openwrt.git openwrt; then
+            echo "源码克隆成功 (尝试 $i)"
             break
           else
             echo "克隆失败，重试 $i/3..."
@@ -77,121 +74,137 @@ jobs:
           fi
         done
 
-    - name: Configure feeds with stability fixes
+    # 第五步：配置Feeds（修复网络问题）
+    - name: Configure feeds with stability
       run: |
         cd istoreos/openwrt
-        
         # 使用稳定的feed配置
-        {
-          echo 'src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;master-v24.10'
-          echo 'src-git istore https://github.com/linkease/istore.git'
-          echo 'src-git packages https://git.openwrt.org/feed/packages.git;openwrt-24.10'
-          echo 'src-git luci https://git.openwrt.org/project/luci.git;openwrt-24.10'
-        } > "$FEEDS_CONF"
+        cat > "$FEEDS_CONF" << 'EOF'
+src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;master-v24.10
+src-git istore https://github.com/linkease/istore.git;main
+src-git packages https://git.openwrt.org/feed/packages.git;openwrt-24.10
+src-git luci https://git.openwrt.org/project/luci.git;openwrt-24.10
+src-git routing https://git.openwrt.org/feed/routing.git;openwrt-24.10
+EOF
 
-    - name: Update feeds with robust error handling
+    # 第六步：更新Feeds（分步进行，增强稳定性）
+    - name: Update feeds step by step
       run: |
         cd istoreos/openwrt
-        
-        # 分步更新feeds，添加重试机制
+        # 分步更新，避免单点失败影响全部[6](@ref)
         for feed in luci packages routing telephony; do
           for i in {1..3}; do
+            echo "更新 $feed feed (尝试 $i/3)"
             if ./scripts/feeds update $feed; then
-              echo "成功更新 $feed feed"
+              echo "$feed 更新成功"
               break
+            elif [ $i -eq 3 ]; then
+              echo "错误: $feed 更新失败"
+              exit 1
             else
-              echo "更新 $feed feed 失败 (尝试 $i/3)"
-              if [ $i -eq 3 ]; then
-                echo "关键feed更新失败，无法继续"
-                exit 1
-              fi
               sleep 30
             fi
           done
         done
-        
-        # 安装feeds
+
+    # 第七步：安装Feeds
+    - name: Install all feeds
+      run: |
+        cd istoreos/openwrt
         ./scripts/feeds install -a
 
-    - name: Fix common Makefile issues
+    # 第八步：应用基础补丁
+    - name: Apply basic device patches
       run: |
         cd istoreos/openwrt
-        
-        # 修复常见的Makefile语法错误
-        echo "检查并修复Makefile问题..."
-        
-        # 修复luci-app-cpufreq Makefile
-        if [ -f "feeds/friendlywrt/package/friendlyelec/luci-app-cpufreq/Makefile" ]; then
-          sed -i 's/PKG_VERSION:=.*/PKG_VERSION:=1.0/' feeds/friendlywrt/package/friendlyelec/luci-app-cpufreq/Makefile
-          sed -i 's/PKG_RELEASE:=.*/PKG_RELEASE:=1/' feeds/friendlywrt/package/friendlyelec/luci-app-cpufreq/Makefile
-        fi
-        
-        # 修复luci-app-store Makefile
-        if [ -f "feeds/istore/luci/luci-app-store/Makefile" ]; then
-          sed -i 's/PKG_VERSION:=.*/PKG_VERSION:=1.0/' feeds/istore/luci/luci-app-store/Makefile
-        fi
-        
-        # 确保所有Makefile有基本的结构
-        find feeds -name "Makefile" -exec sed -i '1i\\include $(TOPDIR)/rules.mk' {} \; 2>/dev/null || true
+        # 确保设备定义存在
+        if ! grep -q "nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk; then
+          cat >> target/linux/rockchip/image/armv8.mk << 'EOF'
 
-    - name: Apply device configuration
+define Device/friendlyarm_nanopi-r2c-plus
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R2C Plus
+  SOC := rk3328
+  IMAGE/sysupgrade.img.gz := boot-combined | boot-script nanopi-r2c-plus | sdcard-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-r8169
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r2c-plus
+EOF
+        fi
+
+    # 第九步：复制配置文件
+    - name: Copy configuration file
       run: |
         cd istoreos/openwrt
-        
-        # 复制配置文件
-        cp ../../$CONFIG_FILE .config
-        
-        # 设置网络配置
+        [ -f "../../$CONFIG_FILE" ] && cp "../../$CONFIG_FILE" .config
+        # 设置默认IP
         sed -i "s/CONFIG_TARGET_IP_ADDR=.*/CONFIG_TARGET_IP_ADDR=\"$LAN_IP\"/" .config
         sed -i "s/CONFIG_TARGET_NETMASK=.*/CONFIG_TARGET_NETMASK=\"$LAN_NETMASK\"/" .config
-        
         make defconfig
 
-    - name: Download packages with enhanced retry
+    # 第十步：下载软件包（带重试）
+    - name: Download packages with retry
       run: |
         cd istoreos/openwrt
-        
-        # 增强的下载重试机制
-        for i in {1..5}; do
-          if make download -j8; then
+        for i in {1..3}; do
+          if make -j2 download; then
             echo "包下载成功"
             break
+          elif [ $i -eq 3 ]; then
+            echo "错误: 包下载失败"
+            exit 1
           else
-            echo "包下载失败，重试 $i/5..."
+            echo "包下载失败，重试 $i/3..."
             sleep 60
           fi
         done
 
-    - name: Build firmware with error recovery
+    # 第十一步：最终磁盘清理
+    - name: Final disk cleanup before build
+      run: |
+        echo "编译前最终磁盘空间:"
+        df -h
+        sudo apt-get autoremove -y
+        sudo apt-get clean
+
+    # 第十二步：编译固件（单线程稳定模式）
+    - name: Build firmware (single thread for stability)
       run: |
         cd istoreos/openwrt
-        
-        # 尝试编译，失败时提供详细错误信息
-        if ! make -j$(nproc) V=s; then
-          echo "编译失败，尝试单线程编译..."
-          make -j1 V=s || {
-            echo "最终编译失败"
-            # 收集错误日志
-            find . -name "dump.txt" -exec head -100 {} \; 2>/dev/null || true
-            exit 1
-          }
-        fi
+        # 使用单线程编译避免内存和磁盘压力[6](@ref)
+        make -j1 V=s 2>&1 | tee build.log
 
-    - name: Collect artifacts
+    # 第十三步：收集构建产物
+    - name: Collect build artifacts
       if: success()
       run: |
         cd istoreos/openwrt
         mkdir -p ../../artifacts
-        
-        # 收集生成的固件
-        find bin -name "*.img" -o -name "*.bin" -o -name "*.gz" | head -10 | while read file; do
-          cp "$file" ../../artifacts/
-        done
+        # 查找固件文件
+        find bin/targets -type f \( -name "*.img" -o -name "*.bin" -o -name "*.gz" \) -exec cp {} ../../artifacts/ \;
+        # 保存构建日志
+        cp build.log ../../artifacts/ 2>/dev/null || true
+        echo "构建产物:"
+        ls -la ../../artifacts/
 
+    # 第十四步：上传产物
     - name: Upload artifacts
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.DEVICE }}-firmware
+        name: ${{ env.DEVICE }}-firmware-${{ github.run_id }}
         path: artifacts/*
+        retention-days: 7
 
+    # 第十五步：失败时收集诊断信息
+    - name: Collect diagnostics on failure
+      if: failure()
+      run: |
+        cd istoreos/openwrt
+        echo "=== 编译失败诊断 ==="
+        # 检查磁盘空间
+        df -h
+        # 检查关键错误
+        tail -200 build.log 2>/dev/null || echo "无构建日志"
+        # 查找Makefile错误
+        find logs -name "dump.txt" -exec echo "=== {} ===" \; -exec head -50 {} \; 2>/dev/null || true
