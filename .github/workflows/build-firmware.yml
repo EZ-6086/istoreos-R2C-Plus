@@ -116,27 +116,19 @@ jobs:
         echo "=== 当前磁盘空间 ==="
         df -h
 
-    - name: Apply essential patches only
-      run: |
-        cd istoreos/openwrt
-        
-        # 只应用必要的R2C Plus设备支持
-        if ! grep -q "nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk 2>/dev/null; then
-          echo "添加R2C Plus设备支持..."
-          cat << 'EOF' >> target/linux/rockchip/image/armv8.mk
-
-define Device/friendlyarm_nanopi-r2c-plus
-  DEVICE_VENDOR := FriendlyARM
-  DEVICE_MODEL := NanoPi R2C Plus
-  SOC := rk3328
-  UBOOT_DEVICE_NAME := nanopi-r2c-plus-rk3328
-  IMAGE/sysupgrade.img.gz := boot-combined | boot-script nanopi-r2c-plus | sdcard-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-r8169
-endef
-TARGET_DEVICES += friendlyarm_nanopi-r2c-plus
-EOF
-        fi
-
+   - name: Apply essential patches only
+  run: |
+    cd istoreos/openwrt
+    if ! grep -q "nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk 2>/dev/null; then
+      echo "添加R2C Plus设备支持..."
+      echo "" >> target/linux/rockchip/image/armv8.mk
+      echo "define Device/friendlyarm_nanopi-r2c-plus" >> target/linux/rockchip/image/armv8.mk
+      echo "  DEVICE_VENDOR := FriendlyARM" >> target/linux/rockchip/image/armv8.mk
+      echo "  DEVICE_MODEL := NanoPi R2C Plus" >> target/linux/rockchip/image/armv8.mk
+      # ... 省略其他行 ...
+      echo "endef" >> target/linux/rockchip/image/armv8.mk
+      echo "TARGET_DEVICES += friendlyarm_nanopi-r2c-plus" >> target/linux/rockchip/image/armv8.mk
+    fi
     - name: Copy configuration with IP settings
       run: |
         cd istoreos/openwrt
@@ -169,3 +161,4 @@ EOF
         # 最后一次空间清理
         sudo apt-get clean
         sudo rm -rf /var/cache/apt
+
