@@ -20,24 +20,24 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 240
     
     steps:
     - name: Checkout repository with minimal depth
       uses: actions/checkout@v4
       with:
         submodules: recursive
-        fetch-depth: 1  # 仅拉取最新提交，减少存储占用[7](@ref)
+        fetch-depth: 1
 
     - name: Initial disk space optimization
       run: |
         echo "=== 初始磁盘空间优化 ==="
         df -h
         
-        # 清理系统预置的大型开发工具[6](@ref)
-        sudo rm -rf /usr/local/lib/android || true          # 移除Android SDK (约15GB)
-        sudo rm -rf /usr/share/dotnet || true              # 移除.NET SDK (约5GB)
-        sudo rm -rf /opt/ghc || true                       # 移除Haskell编译器 (约2GB)
+        # 清理系统预置的大型开发工具
+        sudo rm -rf /usr/local/lib/android || true
+        sudo rm -rf /usr/share/dotnet || true
+        sudo rm -rf /opt/ghc || true
         sudo rm -rf /usr/local/share/boost || true
         sudo rm -rf /opt/az || true
         sudo rm -rf /usr/local/lib32 || true
@@ -46,7 +46,7 @@ jobs:
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
         
-        # 清理Docker缓存[6](@ref)
+        # 清理Docker缓存
         docker system prune -af || true
         docker builder prune -af || true
         
@@ -56,7 +56,7 @@ jobs:
     - name: Install essential dependencies only
       run: |
         sudo apt-get update
-        # 仅安装核心编译依赖，避免不必要的包[5](@ref)
+        # 仅安装核心编译依赖，避免不必要的包
         sudo apt-get install -y \
           build-essential ccache file g++ gawk gettext git \
           libelf-dev libncurses5-dev libncursesw5-dev libssl-dev \
@@ -70,7 +70,7 @@ jobs:
         
         # 优化ccache配置
         echo "CCACHE_DIR=$GITHUB_WORKSPACE/ccache" >> $GITHUB_ENV
-        ccache -o max_size=1G  # 减少ccache大小
+        ccache -o max_size=1G
 
     - name: Clone iStoreOS source with space optimization
       run: |
@@ -117,25 +117,24 @@ jobs:
         df -h
 
     - name: Apply essential patches only
-    run: |
+      run: |
         cd istoreos/openwrt
-    
+        
         # 只应用必要的R2C Plus设备支持
         if ! grep -q "nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk 2>/dev/null; then
           echo "添加R2C Plus设备支持..."
           cat << 'EOF' >> target/linux/rockchip/image/armv8.mk
 
-    define: Device/friendlyarm_nanopi-r2c-plus
-      DEVICE_VENDOR := FriendlyARM
-      DEVICE_MODEL := NanoPi R2C Plus
-      SOC := rk3328
-      UBOOT_DEVICE_NAME := nanopi-r2c-plus-rk3328
-      IMAGE/sysupgrade.img.gz := boot-combined | boot-script nanopi-r2c-plus | sdcard-img | gzip | append-metadata
-      DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-r8169
-    endef:  
-    TARGET_DEVICES:
-      - friendlyarm_nanopi-r2c-plus
-        EOF
+define Device/friendlyarm_nanopi-r2c-plus
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R2C Plus
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := nanopi-r2c-plus-rk3328
+  IMAGE/sysupgrade.img.gz := boot-combined | boot-script nanopi-r2c-plus | sdcard-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-r8169
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r2c-plus
+EOF
         fi
 
     - name: Copy configuration with IP settings
@@ -169,67 +168,4 @@ jobs:
         echo "=== 编译前最终清理 ==="
         # 最后一次空间清理
         sudo apt-get clean
-        sudo rm -rf /var/cache/apt/archives/*
-        docker system prune -af || true
-        
-        cd istoreos/openwrt
-        # 清理不必要的开发文件
-        find . -name "*.o" -delete 2>/dev/null || true
-        
-        echo "=== 最终可用空间 ==="
-        df -h
-
-    - name: Build firmware with single thread
-      run: |
-        cd istoreos/openwrt
-        echo "=== 开始单线程编译（减少磁盘压力） ==="
-        
-        # 使用单线程编译，虽然慢但稳定[5](@ref)
-        make -j1 V=s 2>&1 | tee build.log
-        
-        echo "编译完成"
-
-    - name: Space-optimized artifact collection
-      if: success()
-      run: |
-        cd istoreos/openwrt
-        mkdir -p ../../artifacts
-        
-        # 只收集必要的固件文件
-        find bin/targets -name "*sysupgrade*" -o -name "*factory*" -o -name "*combined*" | head -5 | while read file; do
-          echo "收集: $(basename "$file")"
-          cp "$file" ../../artifacts/
-        done
-        
-        # 选择性收集日志
-        cp build.log ../../artifacts/ 2>/dev/null || true
-        cp diffconfig.log ../../artifacts/ 2>/dev/null || true
-        
-        {
-          echo "Build date: $(date)"
-          echo "Device: $DEVICE"
-          echo "LAN IP: $LAN_IP"
-          echo "Space optimization: Enabled"
-        } > ../../artifacts/build-info.txt
-        
-        echo "=== 最终产物 ==="
-        ls -lh ../../artifacts/
-
-    - name: Upload optimized artifacts
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.DEVICE }}-optimized-${{ github.run_number }}
-        path: artifacts/*
-        retention-days: 7  # 缩短保留时间[8](@ref)
-        compression-level: 9  # 最大压缩[8](@ref)
-
-    - name: Final space report
-      if: always()
-      run: |
-        echo "=== 工作流最终磁盘空间报告 ==="
-        df -h
-        echo "=== 空间使用详情 ==="
-        du -sh $GITHUB_WORKSPACE 2>/dev/null || true
-        du -sh $GITHUB_WORKSPACE/istoreos 2>/dev/null || true
-
+        sudo rm -rf /var/cache/apt
