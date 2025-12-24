@@ -242,10 +242,52 @@ jobs:
           done
         working-directory: ./istoreos/openwrt
 
+      # 第十三步半：编译前验证
+      - name: Pre-build verification
+        run: |
+          echo "=== 编译前状态检查 ==="
+          echo "当前目录: $(pwd)"
+          echo "工作空间: $GITHUB_WORKSPACE"
+          echo "检查目录结构..."
+          
+          # 检查目录是否存在
+          if [ -d "istoreos/openwrt" ]; then
+            echo "✓ istoreos/openwrt 目录存在"
+            echo "目录内容:"
+            ls -la istoreos/openwrt/ | head -10
+          else
+            echo "✗ istoreos/openwrt 目录不存在"
+            echo "当前目录结构:"
+            find . -maxdepth 3 -type d | sort
+            exit 1
+          fi
+          
+          # 检查配置文件
+          if [ -f "istoreos/openwrt/.config" ]; then
+            echo "✓ .config 文件存在"
+          else
+            echo "警告: .config 文件不存在，将使用默认配置"
+          fi
+          
+          echo "磁盘空间:"
+          df -h
+          
+          echo "=== 验证完成 ==="
+
       # 第十四步：编译固件
       - name: Build firmware
         run: |
-          cd ./istoreos/openwrt
+          # 进入 openwrt 目录
+          echo "进入编译目录..."
+          cd "$GITHUB_WORKSPACE/istoreos/openwrt"
+          echo "当前目录: $(pwd)"
+          
+          # 显示构建环境
+          echo "=== 构建环境 ==="
+          echo "OpenWrt 版本:"
+          cat Makefile | grep VERSION || true
+          echo "配置文件:"
+          ls -la .config || true
           
           # 动态计算构建线程
           CPU_CORES=$(nproc)
@@ -288,7 +330,6 @@ jobs:
             echo "编译失败!"
             exit 1
           fi
-        working-directory: ./istoreos
 
       # 第十五步：后处理
       - name: Post-build processing
