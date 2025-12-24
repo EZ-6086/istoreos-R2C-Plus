@@ -1,20 +1,23 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: R2CPlus Builder <builder@github.com>
-Date: $(date)
-Subject: [PATCH] Add NanoPi R2C Plus support with 192.168.101.1 default IP
+Date: $(date +%Y-%m-%d)
+Subject: [PATCH] Add NanoPi R2C Plus support with enhanced hardware support
+
+This patch adds full support for FriendlyARM NanoPi R2C Plus
+with optimized network configuration and hardware drivers.
 
 Signed-off-by: R2CPlus Builder <builder@github.com>
 ---
- target/linux/rockchip/image/armv8.mk                 | 12 ++++++++++++
- .../etc/board.d/02_network                          | 20 ++++++++++++++++++++
- .../etc/hotplug.d/net/10-net-soc_rk3328             | 12 ++++++++++++
- 3 files changed, 44 insertions(+)
+ target/linux/rockchip/image/armv8.mk                 | 19 +++++++++++++++++++
+ .../etc/board.d/02_network                          | 31 +++++++++++++++++++++++++++++++
+ .../etc/hotplug.d/net/10-net-soc_rk3328             | 24 ++++++++++++++++++++++++
+ 3 files changed, 74 insertions(+)
 
 diff --git a/target/linux/rockchip/image/armv8.mk b/target/linux/rockchip/image/armv8.mk
 index abcdef1..1234567 100644
 --- a/target/linux/rockchip/image/armv8.mk
 +++ b/target/linux/rockchip/image/armv8.mk
-@@ -25,6 +25,18 @@ define Device/friendlyarm_nanopi-r2s
+@@ -25,6 +25,25 @@ define Device/friendlyarm_nanopi-r2s
  endef
  TARGET_DEVICES += friendlyarm_nanopi-r2s
  
@@ -24,9 +27,16 @@ index abcdef1..1234567 100644
 +  SOC := rk3328
 +  UBOOT_DEVICE_NAME := nanopi-r2c-plus-rk3328
 +  IMAGE/sysupgrade.img.gz := boot-combined | boot-script nanopi-r2c-plus | sdcard-img | gzip | append-metadata
-+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-r8169 kmod-ata-ahci \
-+    kmod-ata-core kmod-usb-storage kmod-usb-storage-uas \
-+    kmod-usb-net-cdc-ether kmod-usb-net-asix
++  DEVICE_PACKAGES := \
++    kmod-usb-net-rtl8152 kmod-r8169 \
++    kmod-ata-ahci kmod-ata-core \
++    kmod-usb-storage kmod-usb-storage-uas \
++    kmod-usb-net-cdc-ether kmod-usb-net-asix \
++    kmod-usb-net-asix-ax88179 kmod-usb-net-smsc95xx \
++    kmod-crypto-rockchip kmod-hw-random-rockchip \
++    kmod-mmc kmod-dwmmc-rockchip \
++    kmod-phy-realtek \
++    iwinfo
 +endef
 +TARGET_DEVICES += friendlyarm_nanopi-r2c-plus
 +
@@ -37,37 +47,52 @@ diff --git a/target/linux/rockchip/armv8/base-files/etc/board.d/02_network b/tar
 index 89abcdef..fedcba98 100644
 --- a/target/linux/rockchip/armv8/base-files/etc/board.d/02_network
 +++ b/target/linux/rockchip/armv8/base-files/etc/board.d/02_network
-@@ -9,6 +9,16 @@ case "$board" in
+@@ -9,16 +9,47 @@ case "$board" in
  		ucidef_set_interface_wan "eth0"
  		ucidef_set_interface_lan "eth1"
  		;;
 +	friendlyarm,nanopi-r2c-plus)
-+		# NanoPi R2C Plus - 单千兆LAN + USB LAN
-+		ucidef_set_interfaces_lan "eth0"
++		# NanoPi R2C Plus - Single Gigabit LAN (eth0) + Optional USB LAN
++		# Set eth0 as LAN with default IP 192.168.101.1
++		ucidef_set_interface_lan "eth0" "192.168.101.1" "255.255.255.0"
 +		
-+		# 如果有USB网卡，则作为WAN口
++		# Check if USB Ethernet adapter is connected (eth1 or eth2)
++		# Typically, eth1 is the USB 3.0 to Gigabit Ethernet
 +		if [ -d "/sys/class/net/eth1" ]; then
 +			ucidef_set_interface_wan "eth1"
++			logger -t 02_network "R2C Plus: eth1 detected, setting as WAN"
++		elif [ -d "/sys/class/net/eth2" ]; then
++			ucidef_set_interface_wan "eth2"
++			logger -t 02_network "R2C Plus: eth2 detected, setting as WAN"
++		else
++			logger -t 02_network "R2C Plus: No USB Ethernet detected, using eth0 as both LAN and WAN (router mode)"
++			# If no USB Ethernet, we can set eth0 as WAN too for single port operation
++			ucidef_set_interface_wan "eth0"
 +		fi
-+		ucidef_set_interface_lan "eth0" "192.168.101.1" "255.255.255.0"
 +		;;
  	*)
  		ucidef_set_interface_lan "eth0"
  		;;
-@@ -20,6 +30,16 @@ nanopi-r2s)
+ esac
+ 
+-# Legacy board name matching (for devices without DTS compatibility)
++# Legacy board name matching (for devices without proper DTS compatibility)
+ case "$(board_name)" in
+ nanopi-r2s)
  	ucidef_set_interfaces_lan_wan "eth1" "eth0"
  	;;
  
 +nanopi-r2c-plus)
-+	# R2C Plus网络配置
-+	ucidef_set_interfaces_lan "eth0"
-+	
-+	# 配置默认IP
++	# R2C Plus network configuration (legacy method)
++	# Set LAN interface
 +	ucidef_set_interface_lan "eth0" "192.168.101.1" "255.255.255.0"
 +	
-+	# 如果有USB网卡，添加为WAN
-+	[ -e "/sys/class/net/eth1" ] && ucidef_set_interface_wan "eth1"
++	# Auto-detect WAN interface
++	for iface in eth1 eth2; do
++		[ -e "/sys/class/net/${iface}" ] && ucidef_set_interface_wan "${iface}" && break
++	done
 +	;;
++
  *)
  	ucidef_set_interfaces_lan "eth0"
  	;;
@@ -75,21 +100,34 @@ diff --git a/target/linux/rockchip/armv8/base-files/etc/hotplug.d/net/10-net-soc
 index 01234567..89abcdef 100644
 --- a/target/linux/rockchip/armv8/base-files/etc/hotplug.d/net/10-net-soc_rk3328
 +++ b/target/linux/rockchip/armv8/base-files/etc/hotplug.d/net/10-net-soc_rk3328
-@@ -9,6 +9,18 @@ case "$board" in
+@@ -9,6 +9,30 @@ case "$board" in
  		ucidef_set_interface_wan "eth0"
  		ucidef_set_interface_lan "eth1"
  		;;
 +	friendlyarm,nanopi-r2c-plus)
-+		# R2C Plus专用网络配置
-+		# LAN: eth0, WAN: eth1 (USB)
-+		ucidef_set_interface_lan "eth0"
-+		
-+		# 设置LAN IP
-+		uci set network.lan.ipaddr="192.168.101.1"
-+		uci set network.lan.netmask="255.255.255.0"
-+		
-+		# USB网卡作为WAN
-+		[ -d "/sys/class/net/eth1" ] && ucidef_set_interface_wan "eth1"
++		# Hotplug handler for R2C Plus
++		# When USB Ethernet is plugged in, configure it as WAN
++		if [ "$ACTION" = "add" ]; then
++			case "$INTERFACE" in
++				eth1|eth2)
++					# This is likely a USB Ethernet adapter
++					if ! uci get network.wan 2>/dev/null; then
++						# WAN interface not configured yet
++						ucidef_set_interface_wan "$INTERFACE"
++						logger -t hotplug "R2C Plus: $INTERFACE detected, configured as WAN"
++						
++						# Restart network to apply changes
++						/etc/init.d/network restart
++					fi
++					;;
++				eth0)
++					# This is the built-in Ethernet, should be LAN
++					# Ensure LAN configuration is correct
++					uci set network.lan.ifname="eth0"
++					uci commit network
++					;;
++			esac
++		fi
 +		;;
  	*)
  		ucidef_set_interface_lan "eth0"
