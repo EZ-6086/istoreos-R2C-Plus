@@ -59,16 +59,16 @@
 - 性能优化工具
 
 ## 文件结构
-├── .github/workflows/ # GitHub Actions 配置
-├── configs/ # 编译配置文件
-│ ├── r2cplus.config # R2C Plus 专用配置
-│ └── common.config # 通用配置
-├── patches/ # 内核补丁
-│ └── r2cplus-boot.patch # R2C Plus 引导补丁
-├── scripts/ # 构建脚本
-│ ├── apply_patches.sh # 应用补丁脚本
-│ └── custom_scripts.sh # 自定义配置脚本
-└── README.md # 说明文档
+   ├── .github/workflows/ # GitHub Actions 配置
+   ├── configs/ # 编译配置文件
+   │ ├── r2cplus.config # R2C Plus 专用配置
+   │ └── common.config # 通用配置
+   ├── patches/ # 内核补丁
+   │ └── r2cplus-boot.patch # R2C Plus 引导补丁
+   ├── scripts/ # 构建脚本
+   │ ├── apply_patches.sh # 应用补丁脚本
+   │ └── custom_scripts.sh # 自定义配置脚本
+   └── README.md # 说明文档
 
 ##自定义配置
 
@@ -121,4 +121,5 @@ A: 确保已安装正确的驱动：
 - [OpenWrt](https://openwrt.org/)
 
 - [FriendlyARM](https://www.friendlyarm.com/)
+
 
