@@ -1,11 +1,11 @@
 # ====================================================
 # iStoreOS for NanoPi R2C Plus GitHub Actions 配置
-# 版本: 2.1
+# 版本: 3.0
 # 更新日期: $(date +%Y-%m-%d)
-# 描述: GitHub Actions 运行
+# 描述: 优化版 GitHub Actions 工作流，利用 /mnt 空间
 # ====================================================
 
-name: Build iStoreOS for R2C Plus (Stable)
+name: Build iStoreOS for R2C Plus (Optimized)
 
 on:
   push:
@@ -14,6 +14,8 @@ on:
       - '**/*.md'
       - '**/*.txt'
       - '**/README.md'
+      - '.gitignore'
+      - '.gitattributes'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -31,6 +33,14 @@ on:
           - full
           - minimal
           - docker
+      clean_build:
+        description: '是否清理缓存重新构建'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 env:
   DEVICE: nanopi-r2c-plus
@@ -38,6 +48,9 @@ env:
   LAN_NETMASK: 255.255.255.0
   FEEDS_CONF: feeds.conf
   CONFIG_FILE: configs/r2cplus.config
+  # 使用 /mnt 上的充足空间
+  WORKSPACE_PATH: /mnt/istoreos-build-${{ github.run_id }}
+  CACHE_PATH: /mnt/openwrt-cache
 
 jobs:
   build:
@@ -48,48 +61,103 @@ jobs:
         type: ['full']
     
     steps:
-      # 第一步：检出代码
-      - name: Checkout repository
+      # 第一步：初始磁盘空间检查
+      - name: Initial disk space check
+        run: |
+          echo "=== 初始磁盘空间状态 ==="
+          df -h
+          echo "内存状态:"
+          free -h
+          echo "========================="
+          
+          # 创建主工作目录在 /mnt（充足空间）
+          echo "创建工作目录: ${{ env.WORKSPACE_PATH }}"
+          mkdir -p ${{ env.WORKSPACE_PATH }}
+          mkdir -p ${{ env.CACHE_PATH }}
+          
+          # 设置权限
+          chmod -R 777 ${{ env.WORKSPACE_PATH }} 2>/dev/null || true
+          chmod -R 777 ${{ env.CACHE_PATH }} 2>/dev/null || true
+          
+          echo "工作目录创建完成"
+          ls -ld ${{ env.WORKSPACE_PATH }}
+          ls -ld ${{ env.CACHE_PATH }}
+
+      # 第二步：检出代码到新工作空间
+      - name: Checkout repository to workspace
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
           lfs: false
+          path: ${{ env.WORKSPACE_PATH }}
 
-      # 第二步：设置构建缓存
-      - name: Cache dependencies
+      # 第三步：设置构建缓存（使用 /mnt 空间）
+      - name: Cache dependencies on /mnt
         uses: actions/cache@v3
         with:
           path: |
-            ~/.ccache
-            ./istoreos/openwrt/dl
-            ./istoreos/openwrt/build_dir
-          key: ${{ runner.os }}-build-${{ hashFiles('configs/r2cplus.config', 'configs/common.config') }}
+            ${{ env.CACHE_PATH }}/ccache
+            ${{ env.CACHE_PATH }}/dl
+            ${{ env.CACHE_PATH }}/build_dir
+          key: ${{ runner.os }}-openwrt-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-build-
-
-      # 第三步：初始磁盘清理
-      - name: Initial disk space cleanup
+            ${{ runner.os }}-openwrt-
+      
+      # 第四步：修复脚本权限和格式
+      - name: Fix script permissions and format
         run: |
-          echo "初始磁盘空间:"
-          df -h
+          echo "修复脚本文件..."
+          
+          # 修复脚本换行符
+          if [ -d "${{ env.WORKSPACE_PATH }}/scripts" ]; then
+            echo "修复脚本换行符..."
+            find "${{ env.WORKSPACE_PATH }}/scripts" -name "*.sh" -type f -exec sed -i 's/\r$//' {} \;
+            
+            echo "设置脚本执行权限..."
+            find "${{ env.WORKSPACE_PATH }}/scripts" -name "*.sh" -type f -exec chmod +x {} \;
+            
+            echo "验证脚本..."
+            for script in "${{ env.WORKSPACE_PATH }}/scripts"/*.sh; do
+              if [ -f "$script" ]; then
+                echo "检查: $(basename "$script")"
+                if ! head -1 "$script" | grep -q "^#!"; then
+                  echo "  添加shebang"
+                  sed -i '1i#!/bin/bash' "$script"
+                fi
+              fi
+            done
+          else
+            echo "警告: scripts 目录不存在"
+            mkdir -p "${{ env.WORKSPACE_PATH }}/scripts"
+          fi
+          
+          # 确保必要的脚本存在
+          [ ! -f "${{ env.WORKSPACE_PATH }}/scripts/apply_patches.sh" ] && \
+            echo -e '#!/bin/bash\n# 空补丁脚本\necho "没有补丁需要应用"\nexit 0' > "${{ env.WORKSPACE_PATH }}/scripts/apply_patches.sh"
+          
+          [ ! -f "${{ env.WORKSPACE_PATH }}/scripts/custom_scripts.sh" ] && \
+            echo -e '#!/bin/bash\n# 自定义脚本\necho "没有自定义脚本需要执行"\nexit 0' > "${{ env.WORKSPACE_PATH }}/scripts/custom_scripts.sh"
+          
+          [ ! -f "${{ env.WORKSPACE_PATH }}/scripts/post_build.sh" ] && \
+            echo -e '#!/bin/bash\n# 后处理脚本\necho "执行后处理脚本"\n# 收集固件\nmkdir -p "$2"\nfind "$1/bin/targets" -type f \\( -name "*.img" -o -name "*.bin" -o -name "*.gz" \\) -exec cp {} "$2/" \\;\nexit 0' > "${{ env.WORKSPACE_PATH }}/scripts/post_build.sh"
+          
+          # 再次确保权限
+          chmod +x "${{ env.WORKSPACE_PATH }}/scripts"/*.sh 2>/dev/null || true
+
+      # 第五步：系统清理和依赖安装
+      - name: System cleanup and dependencies
+        run: |
+          echo "=== 系统清理和依赖安装 ==="
           
           # 清理系统包缓存
           sudo apt-get clean
           sudo apt-get autoremove -y
           
-          # 清理Docker
-          docker system prune -af 2>/dev/null || true
-          
           # 清理临时文件
           sudo rm -rf /tmp/* /var/tmp/*
           
-          echo "清理后磁盘空间:"
-          df -h
-
-      # 第四步：安装核心依赖
-      - name: Install core dependencies
-        run: |
+          # 安装核心依赖
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             build-essential ccache ecj fastjar file g++ gawk \
@@ -99,61 +167,132 @@ jobs:
             xsltproc zlib1g-dev cpio curl gcc-multilib gperf libxml-parser-perl \
             ocaml-nox sharutils texinfo yui-compressor upx-ucl cmake pkg-config \
             automake autoconf libtool flex bison gcc g++ make patch perl \
-            libjson-perl libxml-simple-perl libfile-slurp-perl
-          
+            libjson-perl libxml-simple-perl libfile-slurp-perl dos2unix
+            
           # 安装Python依赖
           pip install pyelftools
           
           # 配置ccache
-          ccache -M 2G
+          ccache -M 3G
           ccache -s
+          
+          echo "清理后磁盘空间:"
+          df -h
 
-      # 第五步：准备源码目录
-      - name: Prepare source directory
+      # 第六步：准备源码目录结构
+      - name: Prepare source directory structure
         run: |
+          echo "准备源码目录结构..."
+          
+          # 进入工作空间
+          cd ${{ env.WORKSPACE_PATH }}
+          
+          # 创建 istoreos 目录
           mkdir -p istoreos
           cd istoreos
-
-      # 第六步：克隆源码（优化版）
-      - name: Clone source code with retry
-        run: |
-          echo "开始克隆源码..."
           
-          # 创建目录
-          mkdir -p istoreos
-          cd istoreos
-          
-          echo "克隆 iStoreOS..."
-          if ! git clone --depth=1 -b main https://github.com/istoreos/istoreos.git .; then
-            echo "错误: iStoreOS 克隆失败"
-            exit 1
-          fi
-          
-          echo "iStoreOS 克隆成功，目录内容:"
+          echo "当前目录: $(pwd)"
+          echo "目录内容:"
           ls -la
+
+      # 第七步：克隆 iStoreOS 源码
+      - name: Clone iStoreOS source
+        run: |
+          echo "克隆 iStoreOS 源码..."
           
-          echo "克隆 OpenWrt..."
-          if ! git clone --depth=1 -b openwrt-24.10 https://git.openwrt.org/openwrt/openwrt.git openwrt; then
-            # 尝试备用源
-            echo "主源失败，尝试 GitHub 镜像..."
-            if ! git clone --depth=1 -b v24.10.x https://github.com/openwrt/openwrt.git openwrt; then
-              echo "错误: OpenWrt 克隆失败"
+          cd ${{ env.WORKSPACE_PATH }}/istoreos
+          
+          # 克隆 iStoreOS
+          for i in {1..3}; do
+            echo "尝试 $i/3..."
+            if git clone --depth=1 -b main https://github.com/istoreos/istoreos.git .; then
+              echo "iStoreOS 克隆成功"
+              break
+            elif [ $i -eq 3 ]; then
+              echo "错误: iStoreOS 克隆失败"
               exit 1
+            else
+              echo "等待 30 秒后重试..."
+              sleep 30
             fi
-          fi
+          done
           
-          echo "OpenWrt 克隆成功"
-          echo "最终目录结构:"
-          pwd
+          echo "克隆完成，目录内容:"
           ls -la
-          echo "openwrt 目录:"
+          
+        working-directory: ${{ env.WORKSPACE_PATH }}
+
+      # 第八步：克隆 OpenWrt 源码
+      - name: Clone OpenWrt source
+        run: |
+          echo "克隆 OpenWrt 源码..."
+          
+          cd ${{ env.WORKSPACE_PATH }}/istoreos
+          
+          # 克隆 OpenWrt
+          for i in {1..3}; do
+            echo "尝试 $i/3..."
+            if git clone --depth=1 -b openwrt-24.10 https://github.com/openwrt/openwrt.git openwrt; then
+              echo "OpenWrt 克隆成功"
+              break
+            elif [ $i -eq 3 ]; then
+              echo "错误: OpenWrt 克隆失败，尝试官方源..."
+              if ! git clone --depth=1 -b openwrt-24.10 https://git.openwrt.org/openwrt/openwrt.git openwrt; then
+                echo "所有源都失败"
+                exit 1
+              fi
+            else
+              echo "等待 30 秒后重试..."
+              sleep 30
+            fi
+          done
+          
+          echo "验证 OpenWrt 目录:"
           ls -la openwrt/
           
-        working-directory: ./
-        
-      # 第七步：配置Feeds
+          echo "当前磁盘空间:"
+          df -h
+          
+        working-directory: ${{ env.WORKSPACE_PATH }}
+
+      # 第九步：链接缓存目录到 /mnt
+      - name: Link cache directories to /mnt
+        run: |
+          echo "链接缓存目录到 /mnt..."
+          
+          cd ${{ env.WORKSPACE_PATH }}/istoreos/openwrt
+          
+          # 创建必要的缓存目录
+          mkdir -p ${{ env.CACHE_PATH }}/dl
+          mkdir -p ${{ env.CACHE_PATH }}/build_dir
+          mkdir -p ${{ env.CACHE_PATH }}/staging_dir
+          mkdir -p ${{ env.CACHE_PATH }}/ccache
+          
+          # 移除现有目录并创建符号链接
+          rm -rf dl build_dir staging_dir 2>/dev/null || true
+          
+          ln -sf ${{ env.CACHE_PATH }}/dl dl
+          ln -sf ${{ env.CACHE_PATH }}/build_dir build_dir
+          ln -sf ${{ env.CACHE_PATH }}/staging_dir staging_dir
+          
+          # 设置 ccache 目录
+          export CCACHE_DIR="${{ env.CACHE_PATH }}/ccache"
+          
+          echo "缓存目录链接完成"
+          echo "符号链接状态:"
+          ls -la | grep -E "^l.*(dl|build_dir|staging_dir)"
+          
+          echo "缓存目录大小:"
+          du -sh ${{ env.CACHE_PATH }}/* 2>/dev/null || true
+
+      # 第十步：配置 Feeds
       - name: Configure feeds
         run: |
+          echo "配置 feeds..."
+          
+          cd ${{ env.WORKSPACE_PATH }}/istoreos/openwrt
+          
+          # 创建 feeds.conf
           cat > "$FEEDS_CONF" << 'EOF'
           src-git friendlywrt https://github.com/friendlyarm/friendlywrt.git;master-v24.10
           src-git istore https://github.com/linkease/istore.git;main
@@ -162,259 +301,294 @@ jobs:
           src-git routing https://git.openwrt.org/feed/routing.git;openwrt-24.10
           src-git telephony https://git.openwrt.org/feed/telephony.git;openwrt-24.10
           EOF
-        working-directory: ./istoreos/openwrt
+          
+          echo "feeds.conf 内容:"
+          cat $FEEDS_CONF
 
-      # 第八步：更新Feeds
-      - name: Update feeds
+      # 第十一步：更新和安装 Feeds
+      - name: Update and install feeds
         run: |
+          echo "更新和安装 feeds..."
+          
+          cd ${{ env.WORKSPACE_PATH }}/istoreos/openwrt
+          
           ./scripts/feeds update -a
-        working-directory: ./istoreos/openwrt
-
-      # 第九步：安装Feeds
-      - name: Install feeds
-        run: |
           ./scripts/feeds install -a
-        working-directory: ./istoreos/openwrt
-        
-      # 第九步半：修复脚本换行符
-      - name: Fix script line endings
-        run: |
-          if [ -d "$GITHUB_WORKSPACE/scripts" ]; then
-            # 安装 dos2unix 或使用 sed 修复换行符
-            sudo apt-get update
-            sudo apt-get install -y dos2unix
-            # 修复所有脚本文件的换行符
-            find "$GITHUB_WORKSPACE/scripts" -name "*.sh" -exec dos2unix {} \;
-            # 确保脚本有执行权限
-            find "$GITHUB_WORKSPACE/scripts" -name "*.sh" -exec chmod +x {} \;
-          fi    
+          
+          echo "feeds 安装完成"
 
-      # 第十步：应用补丁
+      # 第十二步：应用补丁
       - name: Apply patches
         run: |
-          if [ -f "$GITHUB_WORKSPACE/scripts/apply_patches.sh" ]; then
-            chmod +x "$GITHUB_WORKSPACE/scripts/apply_patches.sh"
-            "$GITHUB_WORKSPACE/scripts/apply_patches.sh"
-          fi
-        working-directory: ./istoreos/openwrt
-
-      # 第十一步：应用自定义配置
-      - name: Apply custom configuration
-        run: |
-          if [ -f "$GITHUB_WORKSPACE/scripts/custom_scripts.sh" ]; then
-            chmod +x "$GITHUB_WORKSPACE/scripts/custom_scripts.sh"
-            "$GITHUB_WORKSPACE/scripts/custom_scripts.sh"
-          fi
-        working-directory: ./istoreos/openwrt
-
-      # 第十二步：复制配置文件
-      - name: Copy configuration file
-        run: |
-          if [ -f "$GITHUB_WORKSPACE/$CONFIG_FILE" ]; then
-            echo "使用自定义配置文件: $CONFIG_FILE"
-            cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config
+          echo "应用补丁..."
+          
+          cd ${{ env.WORKSPACE_PATH }}/istoreos/openwrt
+          
+          if [ -f "${{ env.WORKSPACE_PATH }}/scripts/apply_patches.sh" ]; then
+            echo "执行补丁脚本..."
+            chmod +x "${{ env.WORKSPACE_PATH }}/scripts/apply_patches.sh"
+            "${{ env.WORKSPACE_PATH }}/scripts/apply_patches.sh"
           else
-            echo "错误: 配置文件不存在"
+            echo "没有找到补丁脚本，跳过"
+          fi
+
+      # 第十三步：应用自定义脚本
+      - name: Apply custom scripts
+        run: |
+          echo "应用自定义脚本..."
+          
+          cd ${{ env.WORKSPACE_PATH }}/istoreos/openwrt
+          
+          if [ -f "${{ env.WORKSPACE_PATH }}/scripts/custom_scripts.sh" ]; then
+            echo "执行自定义脚本..."
+            chmod +x "${{ env.WORKSPACE_PATH }}/scripts/custom_scripts.sh"
+            "${{ env.WORKSPACE_PATH }}/scripts/custom_scripts.sh"
+          else
+            echo "没有找到自定义脚本，跳过"
+          fi
+
+      # 第十四步：复制和配置配置文件
+      - name: Copy and configure config file
+        run: |
+          echo "复制和配置配置文件..."
+          
+          cd ${{ env.WORKSPACE_PATH }}/istoreos/openwrt
+          
+          # 复制配置文件
+          if [ -f "${{ env.WORKSPACE_PATH }}/$CONFIG_FILE" ]; then
+            echo "使用自定义配置文件: $CONFIG_FILE"
+            cp "${{ env.WORKSPACE_PATH }}/$CONFIG_FILE" .config
+          else
+            echo "错误: 配置文件不存在: $CONFIG_FILE"
             exit 1
           fi
           
-          # 设置环境变量
+          # 设置 LAN IP 和网络掩码
           sed -i "s|CONFIG_TARGET_IP_ADDR=.*|CONFIG_TARGET_IP_ADDR=\"$LAN_IP\"|" .config 2>/dev/null || true
           sed -i "s|CONFIG_TARGET_NETMASK=.*|CONFIG_TARGET_NETMASK=\"$LAN_NETMASK\"|" .config 2>/dev/null || true
           
           # 应用配置
           make defconfig
-        working-directory: ./istoreos/openwrt
+          
+          echo "配置完成，生成摘要:"
+          grep -E "CONFIG_TARGET|CONFIG_ARCH|CONFIG_LUCI" .config | head -20
 
-      # 第十三步：下载软件包
+      # 第十五步：下载软件包
       - name: Download packages
         run: |
+          echo "下载软件包..."
+          
+          cd ${{ env.WORKSPACE_PATH }}/istoreos/openwrt
+          
+          # 显示磁盘空间
+          echo "下载前磁盘空间:"
+          df -h
+          
+          # 下载包（带重试）
           for i in {1..3}; do
+            echo "下载尝试 $i/3..."
             if make download -j$(nproc); then
               echo "包下载成功"
               break
             elif [ $i -eq 3 ]; then
-              echo "警告: 包下载失败，继续构建..."
+              echo "警告: 包下载失败，尝试继续构建..."
+              # 不退出，尝试继续
             else
               echo "包下载失败，60秒后重试..."
               sleep 60
             fi
           done
-        working-directory: ./istoreos/openwrt
-
-      # 第十三步半：编译前验证
-      - name: Pre-build verification
-        run: |
-          echo "=== 编译前状态检查 ==="
-          echo "当前目录: $(pwd)"
-          echo "工作空间: $GITHUB_WORKSPACE"
-          echo "检查目录结构..."
           
-          # 检查目录是否存在
-          if [ -d "istoreos/openwrt" ]; then
-            echo "✓ istoreos/openwrt 目录存在"
-            echo "目录内容:"
-            ls -la istoreos/openwrt/ | head -10
-          else
-            echo "✗ istoreos/openwrt 目录不存在"
-            echo "当前目录结构:"
-            find . -maxdepth 3 -type d | sort
-            exit 1
-          fi
-          
-          # 检查配置文件
-          if [ -f "istoreos/openwrt/.config" ]; then
-            echo "✓ .config 文件存在"
-          else
-            echo "警告: .config 文件不存在，将使用默认配置"
-          fi
-          
-          echo "磁盘空间:"
+          echo "下载后磁盘空间:"
           df -h
-          
-          echo "=== 验证完成 ==="
 
-          echo "=== 编译前优化 ==="
-          
-          # 最大化清理系统
-          echo "1. 清理系统缓存..."
-          sudo apt-get clean
-          sudo apt-get autoremove -y --purge
-          sudo rm -rf /var/lib/apt/lists/*
-          
-          echo "2. 清理各种缓存..."
-          # Docker
-          docker system prune -af 2>/dev/null || true
-          # NPM
-          npm cache clean --force 2>/dev/null || true
-          # Pip
-          python3 -m pip cache purge 2>/dev/null || true
-          # Ruby gems
-          gem cleanup 2>/dev/null || true
-          # Maven
-          rm -rf ~/.m2/repository 2>/dev/null || true
-          
-          echo "3. 清理临时文件..."
-          sudo rm -rf /tmp/* /var/tmp/*
-          sudo rm -rf /home/runner/.cache/* 2>/dev/null || true
-          
-          echo "4. 优化 ccache 设置..."
-          ccache -C  # 清除缓存
-          ccache -M 500M  # 限制为 500MB
-          
-          echo "当前磁盘空间:"
-          df -h
-          
-          echo "=== 优化完成 ==="
-          
-
-
-      # 第十四步：编译固件（优化完整版）
+      # 第十六步：编译固件（优化版）
       - name: Build firmware (optimized)
         run: |
-          cd "$GITHUB_WORKSPACE/istoreos/openwrt"
+          echo "=== 编译固件开始 ==="
           
-          echo "=== 编译环境 ==="
-          echo "目录: $(pwd)"
-          echo "磁盘空间:"
+          # 进入 OpenWrt 目录
+          cd ${{ env.WORKSPACE_PATH }}/istoreos/openwrt
+          
+          echo "当前目录: $(pwd)"
+          echo "所在磁盘: $(df -h . | tail -1)"
+          
+          # 设置 ccache（使用 /mnt 空间）
+          export CCACHE_DIR="${{ env.CACHE_PATH }}/ccache"
+          export CCACHE_MAXSIZE="3G"
+          mkdir -p $CCACHE_DIR
+          ccache -s
+          
+          # 计算构建线程（可以更激进，因为有充足空间）
+          CPU_CORES=$(nproc)
+          MEM_AVAILABLE=$(free -m | awk '/^Mem:/{print $2}')
+          
+          if [ $MEM_AVAILABLE -gt 12000 ]; then
+            BUILD_JOBS=$((CPU_CORES * 2))
+          elif [ $MEM_AVAILABLE -gt 6000 ]; then
+            BUILD_JOBS=$CPU_CORES
+          else
+            BUILD_JOBS=$((CPU_CORES / 2))
+            [ $BUILD_JOBS -lt 2 ] && BUILD_JOBS=2
+          fi
+          
+          echo "系统信息:"
+          echo "CPU核心数: $CPU_CORES"
+          echo "可用内存: ${MEM_AVAILABLE}MB"
+          echo "使用构建线程数: $BUILD_JOBS"
+          echo "编译前磁盘空间:"
           df -h
           
-          # 非常保守的线程设置
-          BUILD_JOBS=1
-          echo "使用线程数: $BUILD_JOBS"
+          # 编译工具链
+          echo "阶段1: 编译工具链..."
+          time make -j$BUILD_JOBS tools/compile
           
-          # 分阶段编译，每阶段后清理
-          STAGES=("tools/compile" "toolchain/compile" "target/compile")
+          # 阶段后清理
+          echo "阶段后清理..."
+          make clean-staging 2>/dev/null || true
           
-          for stage in "${STAGES[@]}"; do
-            echo "编译阶段: $stage"
-            
-            # 编译当前阶段
-            time make -j$BUILD_JOBS $stage 2>&1 | tail -100
-            
-            # 阶段后清理
-            echo "阶段后清理..."
-            make clean-staging 2>/dev/null || true
-            make clean-tmp 2>/dev/null || true
-            
-            # 清理大文件
-            find dl -type f -size +20M -delete 2>/dev/null || true
-            find build_dir -name "*.o" -type f -delete 2>/dev/null || true
-            
-            echo "当前磁盘空间:"
-            df -h
-            
-            # 如果磁盘空间不足，采取紧急措施
-            AVAIL=$(df --output=avail / | tail -1)
-            if [ $AVAIL -lt 1000000 ]; then  # 小于 1GB
-              echo "警告: 磁盘空间不足，紧急清理..."
-              make clean 2>/dev/null || true
-              rm -rf tmp build_dir/target-* 2>/dev/null || true
-            fi
-          done
+          echo "磁盘空间状态:"
+          df -h
           
+          # 编译工具
+          echo "阶段2: 编译工具..."
+          time make -j$BUILD_JOBS toolchain/compile
+          
+          echo "磁盘空间状态:"
+          df -h
+          
+          # 编译目标
+          echo "阶段3: 编译目标..."
+          time make -j$BUILD_JOBS target/compile
+          
+          # 最终编译
           echo "最终编译..."
-          # 使用最小化输出
-          time make -j$BUILD_JOBS 2>&1 | grep -E "(error|Error|installing|Collecting)" | tail -500 > build.log
           
-          # 检查结果
-          if find bin -name "*.img" -o -name "*.bin" -o -name "*.gz" 2>/dev/null | grep -q .; then
-            echo "编译成功！找到固件:"
-            find bin -name "*.img" -o -name "*.bin" -o -name "*.gz" 2>/dev/null | head -5
+          # 使用 tee 保存日志，同时显示关键信息
+          time make -j$BUILD_JOBS V=s 2>&1 | tee build.log | grep -E "(error|Error|warning|Warning|installing|Compiling|Linking)" | tail -200
+          
+          # 检查编译结果
+          COMPILE_RESULT=$?
+          
+          if [ $COMPILE_RESULT -eq 0 ]; then
+            echo "编译成功!"
+            
+            # 查找生成的固件
+            if find bin/targets -name "*.img" -o -name "*.bin" -o -name "*.gz" 2>/dev/null | grep -q .; then
+              echo "找到固件文件:"
+              find bin/targets -name "*.img" -o -name "*.bin" -o -name "*.gz" 2>/dev/null | xargs ls -lh
+            else
+              echo "警告: 未找到固件文件，但编译返回成功"
+            fi
           else
-            echo "编译失败！最后错误:"
-            tail -50 build.log
+            echo "编译失败!"
+            echo "最后错误信息:"
+            tail -100 build.log | grep -i error
             exit 1
           fi
           
-          echo "最终磁盘空间:"
+          echo "编译后磁盘空间:"
           df -h
+          echo "=== 编译完成 ==="
 
-      # 第十五步：后处理
+      # 第十七步：后处理
       - name: Post-build processing
         if: success()
         run: |
-          if [ -f "$GITHUB_WORKSPACE/scripts/post_build.sh" ]; then
-            chmod +x "$GITHUB_WORKSPACE/scripts/post_build.sh"
-            "$GITHUB_WORKSPACE/scripts/post_build.sh" "./istoreos/openwrt" "$GITHUB_WORKSPACE/artifacts"
+          echo "后处理..."
+          
+          # 创建工作空间根目录的 artifacts 目录
+          mkdir -p ${{ env.WORKSPACE_PATH }}/artifacts
+          
+          # 执行后处理脚本
+          if [ -f "${{ env.WORKSPACE_PATH }}/scripts/post_build.sh" ]; then
+            echo "执行后处理脚本..."
+            chmod +x "${{ env.WORKSPACE_PATH }}/scripts/post_build.sh"
+            "${{ env.WORKSPACE_PATH }}/scripts/post_build.sh" \
+              "${{ env.WORKSPACE_PATH }}/istoreos/openwrt" \
+              "${{ env.WORKSPACE_PATH }}/artifacts"
           else
             # 默认收集固件
-            mkdir -p $GITHUB_WORKSPACE/artifacts
-            cd ./istoreos/openwrt
+            echo "使用默认后处理..."
+            cd ${{ env.WORKSPACE_PATH }}/istoreos/openwrt
             
             # 查找固件文件
-            find bin/targets -type f \( -name "*.img" -o -name "*.bin" -o -name "*.gz" \) -exec cp {} $GITHUB_WORKSPACE/artifacts/ \;
+            find bin/targets -type f \( -name "*.img" -o -name "*.bin" -o -name "*.gz" \) -exec cp {} ${{ env.WORKSPACE_PATH }}/artifacts/ \;
             
             # 收集日志
-            cp build.log $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
-            cp .config $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+            cp build.log ${{ env.WORKSPACE_PATH }}/artifacts/ 2>/dev/null || true
+            cp .config ${{ env.WORKSPACE_PATH }}/artifacts/ 2>/dev/null || true
           fi
           
-          echo "构建产物:"
+          echo "产物列表:"
+          ls -la ${{ env.WORKSPACE_PATH }}/artifacts/
+
+      # 第十八步：复制产物到默认工作空间
+      - name: Copy artifacts to default workspace
+        if: success()
+        run: |
+          echo "复制产物到默认工作空间..."
+          
+          # 在默认工作空间创建 artifacts 目录
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          
+          # 复制所有产物
+          if [ -d "${{ env.WORKSPACE_PATH }}/artifacts" ]; then
+            cp -r ${{ env.WORKSPACE_PATH }}/artifacts/* $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+          fi
+          
+          echo "产物已复制到: $GITHUB_WORKSPACE/artifacts"
           ls -la $GITHUB_WORKSPACE/artifacts/
 
-      # 第十六步：上传产物
+      # 第十九步：上传产物
       - name: Upload artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.DEVICE }}-firmware-${{ github.run_number }}
-          path: |
-            artifacts/*
+          path: $GITHUB_WORKSPACE/artifacts/*
           retention-days: 30
           if-no-files-found: error
 
-      # 第十七步：失败诊断
+      # 第二十步：编译失败诊断
       - name: Diagnostics on failure
         if: failure()
         run: |
           echo "=== 编译失败诊断 ==="
+          
           echo "磁盘空间:"
           df -h
+          
           echo "内存使用:"
           free -h
           
-          if [ -f ./istoreos/openwrt/build.log ]; then
-            echo "构建日志最后100行:"
-            tail -100 ./istoreos/openwrt/build.log
+          echo "编译日志最后200行:"
+          if [ -f "${{ env.WORKSPACE_PATH }}/istoreos/openwrt/build.log" ]; then
+            tail -200 "${{ env.WORKSPACE_PATH }}/istoreos/openwrt/build.log"
+          else
+            echo "未找到 build.log"
           fi
+          
+          echo "配置文件:"
+          if [ -f "${{ env.WORKSPACE_PATH }}/istoreos/openwrt/.config" ]; then
+            grep -E "CONFIG_TARGET|CONFIG_ARCH|CONFIG_LUCI" "${{ env.WORKSPACE_PATH }}/istoreos/openwrt/.config" | head -30
+          fi
+
+      # 第二十一步：清理 /mnt 空间
+      - name: Cleanup /mnt space
+        if: always()
+        run: |
+          echo "清理 /mnt 临时文件..."
+          
+          # 清理本次运行的工作目录
+          if [ -d "${{ env.WORKSPACE_PATH }}" ]; then
+            echo "删除工作目录: ${{ env.WORKSPACE_PATH }}"
+            rm -rf "${{ env.WORKSPACE_PATH }}"
+          fi
+          
+          # 可选：清理旧的缓存（保留最近3天的）
+          echo "清理旧缓存（保留3天内）..."
+          find ${{ env.CACHE_PATH }} -type f -mtime +3 -delete 2>/dev/null || true
+          
+          echo "最终磁盘空间状态:"
+          df -h
