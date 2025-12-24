@@ -158,6 +158,19 @@ jobs:
         run: |
           ./scripts/feeds install -a
         working-directory: ./istoreos/openwrt
+        
+      # 第九步半：修复脚本换行符
+      - name: Fix script line endings
+        run: |
+          if [ -d "$GITHUB_WORKSPACE/scripts" ]; then
+            # 安装 dos2unix 或使用 sed 修复换行符
+            sudo apt-get update
+            sudo apt-get install -y dos2unix
+            # 修复所有脚本文件的换行符
+            find "$GITHUB_WORKSPACE/scripts" -name "*.sh" -exec dos2unix {} \;
+            # 确保脚本有执行权限
+            find "$GITHUB_WORKSPACE/scripts" -name "*.sh" -exec chmod +x {} \;
+          fi    
 
       # 第十步：应用补丁
       - name: Apply patches
