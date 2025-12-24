@@ -274,62 +274,101 @@ jobs:
           
           echo "=== 验证完成 ==="
 
-      # 第十四步：编译固件
-      - name: Build firmware
+          echo "=== 编译前优化 ==="
+          
+          # 最大化清理系统
+          echo "1. 清理系统缓存..."
+          sudo apt-get clean
+          sudo apt-get autoremove -y --purge
+          sudo rm -rf /var/lib/apt/lists/*
+          
+          echo "2. 清理各种缓存..."
+          # Docker
+          docker system prune -af 2>/dev/null || true
+          # NPM
+          npm cache clean --force 2>/dev/null || true
+          # Pip
+          python3 -m pip cache purge 2>/dev/null || true
+          # Ruby gems
+          gem cleanup 2>/dev/null || true
+          # Maven
+          rm -rf ~/.m2/repository 2>/dev/null || true
+          
+          echo "3. 清理临时文件..."
+          sudo rm -rf /tmp/* /var/tmp/*
+          sudo rm -rf /home/runner/.cache/* 2>/dev/null || true
+          
+          echo "4. 优化 ccache 设置..."
+          ccache -C  # 清除缓存
+          ccache -M 500M  # 限制为 500MB
+          
+          echo "当前磁盘空间:"
+          df -h
+          
+          echo "=== 优化完成 ==="
+          
+
+
+      # 第十四步：编译固件（优化完整版）
+      - name: Build firmware (optimized)
         run: |
-          # 进入 openwrt 目录
-          echo "进入编译目录..."
           cd "$GITHUB_WORKSPACE/istoreos/openwrt"
-          echo "当前目录: $(pwd)"
           
-          # 显示构建环境
-          echo "=== 构建环境 ==="
-          echo "OpenWrt 版本:"
-          cat Makefile | grep VERSION || true
-          echo "配置文件:"
-          ls -la .config || true
+          echo "=== 编译环境 ==="
+          echo "目录: $(pwd)"
+          echo "磁盘空间:"
+          df -h
           
-          # 动态计算构建线程
-          CPU_CORES=$(nproc)
-          MEM_AVAILABLE=$(free -m | awk '/^Mem:/{print $2}')
+          # 非常保守的线程设置
+          BUILD_JOBS=1
+          echo "使用线程数: $BUILD_JOBS"
           
-          if [ $MEM_AVAILABLE -gt 16000 ]; then
-            BUILD_JOBS=$((CPU_CORES * 2))
-          elif [ $MEM_AVAILABLE -gt 8000 ]; then
-            BUILD_JOBS=$CPU_CORES
-          else
-            BUILD_JOBS=$((CPU_CORES / 2))
-            [ $BUILD_JOBS -lt 2 ] && BUILD_JOBS=2
-          fi
+          # 分阶段编译，每阶段后清理
+          STAGES=("tools/compile" "toolchain/compile" "target/compile")
           
-          echo "系统信息:"
-          echo "CPU核心数: $CPU_CORES"
-          echo "可用内存: ${MEM_AVAILABLE}MB"
-          echo "使用构建线程数: $BUILD_JOBS"
-          
-          # 设置ccache
-          export CCACHE_DIR="$HOME/.ccache"
-          export CCACHE_MAXSIZE="2G"
-          
-          # 分阶段编译优化
-          echo "阶段1: 编译工具链..."
-          time make -j$BUILD_JOBS tools/compile
-          
-          echo "阶段2: 编译工具..."
-          time make -j$BUILD_JOBS toolchain/compile
-          
-          echo "阶段3: 编译目标..."
-          time make -j$BUILD_JOBS target/compile
+          for stage in "${STAGES[@]}"; do
+            echo "编译阶段: $stage"
+            
+            # 编译当前阶段
+            time make -j$BUILD_JOBS $stage 2>&1 | tail -100
+            
+            # 阶段后清理
+            echo "阶段后清理..."
+            make clean-staging 2>/dev/null || true
+            make clean-tmp 2>/dev/null || true
+            
+            # 清理大文件
+            find dl -type f -size +20M -delete 2>/dev/null || true
+            find build_dir -name "*.o" -type f -delete 2>/dev/null || true
+            
+            echo "当前磁盘空间:"
+            df -h
+            
+            # 如果磁盘空间不足，采取紧急措施
+            AVAIL=$(df --output=avail / | tail -1)
+            if [ $AVAIL -lt 1000000 ]; then  # 小于 1GB
+              echo "警告: 磁盘空间不足，紧急清理..."
+              make clean 2>/dev/null || true
+              rm -rf tmp build_dir/target-* 2>/dev/null || true
+            fi
+          done
           
           echo "最终编译..."
-          time make -j$BUILD_JOBS V=s 2>&1 | tee build.log
+          # 使用最小化输出
+          time make -j$BUILD_JOBS 2>&1 | grep -E "(error|Error|installing|Collecting)" | tail -500 > build.log
           
-          if [ $? -eq 0 ]; then
-            echo "编译成功!"
+          # 检查结果
+          if find bin -name "*.img" -o -name "*.bin" -o -name "*.gz" 2>/dev/null | grep -q .; then
+            echo "编译成功！找到固件:"
+            find bin -name "*.img" -o -name "*.bin" -o -name "*.gz" 2>/dev/null | head -5
           else
-            echo "编译失败!"
+            echo "编译失败！最后错误:"
+            tail -50 build.log
             exit 1
           fi
+          
+          echo "最终磁盘空间:"
+          df -h
 
       # 第十五步：后处理
       - name: Post-build processing
