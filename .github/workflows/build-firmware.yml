@@ -48,9 +48,9 @@ env:
   LAN_NETMASK: 255.255.255.0
   FEEDS_CONF: feeds.conf
   CONFIG_FILE: configs/r2cplus.config
-  # 使用 /mnt 上的充足空间
-  WORKSPACE_PATH: /mnt/istoreos-build-${{ github.run_id }}
-  CACHE_PATH: /mnt/openwrt-cache
+  # 使用 /home/runner 上的空间（用户有权限）
+  WORKSPACE_PATH: /home/runner/istoreos-build
+  CACHE_PATH: /home/runner/openwrt-cache
 
 jobs:
   build:
