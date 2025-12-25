@@ -1,0 +1,238 @@
+#!/bin/bash
+# ====================================================
+# iStoreOS R2C Plus 补丁应用脚本
+# 版本: 2.2 - 磁盘空间优化版
+# 功能: 自动化应用补丁和配置硬件支持
+# ====================================================
+
+set -e
+set -o pipefail
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# 日志函数
+log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# 初始化变量
+init_variables() {
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+    OPENWRT_DIR="${PROJECT_ROOT}/istoreos/openwrt"
+    PATCHES_DIR="${PROJECT_ROOT}/patches"
+    
+    if [ ! -d "$OPENWRT_DIR" ]; then
+        log_error "OpenWrt 目录不存在: $OPENWRT_DIR"
+        exit 1
+    fi
+    
+    if [ ! -d "$PATCHES_DIR" ]; then
+        log_warning "补丁目录不存在: $PATCHES_DIR"
+        mkdir -p "$PATCHES_DIR"
+        log_info "已创建补丁目录"
+    fi
+}
+
+# 应用补丁文件
+apply_patches() {
+    log_info "开始应用补丁..."
+    
+    cd "$OPENWRT_DIR" || {
+        log_error "无法进入目录: $OPENWRT_DIR"
+        return 1
+    }
+    
+    local applied_count=0
+    local failed_count=0
+    
+    for patch in "$PATCHES_DIR"/*.patch; do
+        if [ ! -f "$patch" ]; then
+            continue
+        fi
+        
+        local patch_name=$(basename "$patch")
+        log_info "正在应用补丁: $patch_name"
+        
+        if patch -p1 --dry-run < "$patch" &> /dev/null; then
+            if patch -p1 < "$patch" &> /tmp/patch-${patch_name%.*}.log; then
+                log_success "补丁应用成功: $patch_name"
+                applied_count=$((applied_count + 1))
+            else
+                log_error "补丁应用失败: $patch_name"
+                failed_count=$((failed_count + 1))
+            fi
+        else
+            log_warning "补丁可能已应用或存在冲突: $patch_name"
+        fi
+    done
+    
+    echo ""
+    log_info "补丁应用统计:"
+    log_info "  成功: $applied_count"
+    log_info "  失败: $failed_count"
+    
+    if [ $failed_count -gt 0 ]; then
+        log_error "有补丁应用失败"
+        return 1
+    fi
+    
+    return 0
+}
+
+# 验证补丁应用结果
+verify_patches() {
+    log_info "验证补丁应用结果..."
+    
+    local verification_passed=0
+    
+    # 检查设备定义是否存在
+    if grep -q "friendlyarm_nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk 2>/dev/null; then
+        log_success "✓ R2C Plus 设备定义已添加"
+        verification_passed=$((verification_passed + 1))
+    else
+        log_error "✗ R2C Plus 设备定义未找到"
+    fi
+    
+    # 检查网络配置
+    if [ -f target/linux/rockchip/armv8/base-files/etc/board.d/02_network ]; then
+        if grep -q "nanopi-r2c-plus" target/linux/rockchip/armv8/base-files/etc/board.d/02_network 2>/dev/null; then
+            log_success "✓ R2C Plus 网络配置已添加"
+            verification_passed=$((verification_passed + 1))
+        else
+            log_warning "⚠ R2C Plus 网络配置未找到"
+        fi
+    fi
+    
+    if [ $verification_passed -ge 1 ]; then
+        log_success "补丁验证通过"
+        return 0
+    else
+        log_error "补丁验证失败"
+        return 1
+    fi
+}
+
+# 创建备用配置（如果补丁应用失败）
+create_fallback_config() {
+    log_warning "补丁验证失败，创建备用配置"
+    
+    local base_files_dir="target/linux/rockchip/armv8/base-files"
+    mkdir -p "${base_files_dir}/etc/board.d"
+    mkdir -p "${base_files_dir}/etc/hotplug.d/net"
+    
+    # 1. 添加设备定义到 armv8.mk
+    if ! grep -q "friendlyarm_nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk 2>/dev/null; then
+        log_info "添加 R2C Plus 设备定义..."
+        
+        # 找到合适的位置插入
+        local insert_line=$(grep -n "TARGET_DEVICES += friendlyarm_nanopi-r2s" target/linux/rockchip/image/armv8.mk | tail -1 | cut -d: -f1)
+        
+        if [ -n "$insert_line" ]; then
+            sed -i "${insert_line}a\\
+\\
+define Device/friendlyarm_nanopi-r2c-plus\\
+  DEVICE_VENDOR := FriendlyARM\\
+  DEVICE_MODEL := NanoPi R2C Plus\\
+  SOC := rk3328\\
+  UBOOT_DEVICE_NAME := nanopi-r2c-plus-rk3328\\
+  IMAGE/sysupgrade.img.gz := boot-combined | boot-script nanopi-r2c-plus | sdcard-img | gzip | append-metadata\\
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-r8169 \\
+    kmod-usb-storage kmod-usb-storage-uas kmod-usb-net-cdc-ether kmod-usb-net-asix\\
+    kmod-crypto-rockchip kmod-hw-random-rockchip\\
+    kmod-mmc kmod-dwmmc-rockchip kmod-phy-realtek\\
+  SUPPORTED_DEVICES += nanopi-r2c-plus\\
+endef\\
+TARGET_DEVICES += friendlyarm_nanopi-r2c-plus" target/linux/rockchip/image/armv8.mk
+        else
+            # 追加到文件末尾
+            cat >> target/linux/rockchip/image/armv8.mk << 'EOF'
+
+define Device/friendlyarm_nanopi-r2c-plus
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R2C Plus
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := nanopi-r2c-plus-rk3328
+  IMAGE/sysupgrade.img.gz := boot-combined | boot-script nanopi-r2c-plus | sdcard-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-r8169
+    kmod-usb-storage kmod-usb-storage-uas kmod-usb-net-cdc-ether kmod-usb-net-asix
+    kmod-crypto-rockchip kmod-hw-random-rockchip
+    kmod-mmc kmod-dwmmc-rockchip kmod-phy-realtek
+  SUPPORTED_DEVICES += nanopi-r2c-plus
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r2c-plus
+EOF
+        fi
+        log_success "设备定义已添加"
+    fi
+    
+    # 2. 添加网络配置
+    local network_file="${base_files_dir}/etc/board.d/02_network"
+    if [ ! -f "$network_file" ]; then
+        touch "$network_file"
+        chmod +x "$network_file"
+        
+        echo '#!/bin/sh' > "$network_file"
+        echo '' >> "$network_file"
+        echo '. /lib/functions.sh' >> "$network_file"
+        echo '' >> "$network_file"
+    fi
+    
+    if ! grep -q "nanopi-r2c-plus" "$network_file" 2>/dev/null; then
+        log_info "添加 R2C Plus 网络配置..."
+        
+        cat >> "$network_file" << 'EOF'
+
+case "$(board_name)" in
+friendlyarm,nanopi-r2c-plus)
+    ucidef_set_interface_lan "eth0" "192.168.101.1" "255.255.255.0"
+    # 检测 USB 网卡
+    for iface in eth1 eth2; do
+        [ -e "/sys/class/net/${iface}" ] && ucidef_set_interface_wan "${iface}" && break
+    done
+    ;;
+esac
+EOF
+        log_success "网络配置已添加"
+    fi
+    
+    log_success "备用配置创建完成"
+}
+
+# 主函数
+main() {
+    echo -e "${BLUE}==========================================${NC}"
+    echo -e "${BLUE}    iStoreOS R2C Plus 补丁应用工具    ${NC}"
+    echo -e "${BLUE}==========================================${NC}"
+    echo ""
+    
+    # 初始化
+    init_variables
+    
+    # 应用补丁
+    if ! apply_patches; then
+        log_error "补丁应用失败，尝试创建备用配置"
+        create_fallback_config
+    fi
+    
+    # 验证
+    if verify_patches; then
+        log_success "补丁应用成功！"
+    else
+        log_error "补丁应用存在问题"
+        create_fallback_config
+    fi
+    
+    echo ""
+    echo -e "${GREEN}请运行 make menuconfig 检查配置${NC}"
+    echo -e "${GREEN}选择 Target Profile: FriendlyARM NanoPi R2C Plus${NC}"
+}
+
+# 运行主函数
+main "$@"
