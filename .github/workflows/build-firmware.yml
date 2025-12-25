@@ -48,18 +48,27 @@ env:
   LAN_NETMASK: 255.255.255.0
   WORKSPACE_PATH: /home/runner/istoreos-build
   CACHE_PATH: /home/runner/openwrt-cache
-  BUILD_TYPE: ${{ github.event.inputs.build_type || 'minimal' }}
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 240  # 减少超时时间
-    strategy:
-      matrix:
-        type: ['${{ env.BUILD_TYPE }}']
+    
+    # 修复：移除strategy.matrix中对env的引用
+    # 直接在作业级别设置变量
+    outputs:
+      build-type: ${{ steps.set-build-type.outputs.build-type }}
     
     steps:
-      # 第一步：初始磁盘空间检查和优化
+      # 第一步：设置构建类型变量
+      - name: Set build type variable
+        id: set-build-type
+        run: |
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'minimal' }}"
+          echo "build-type=$BUILD_TYPE" >> $GITHUB_OUTPUT
+          echo "使用构建类型: $BUILD_TYPE"
+      
+      # 第二步：初始磁盘空间检查和优化
       - name: Initial disk space check and optimization
         run: |
           echo "=== 初始磁盘空间状态 ==="
@@ -84,7 +93,7 @@ jobs:
           echo "初始工作空间大小:"
           du -sh ${{ env.WORKSPACE_PATH }}
 
-      # 第二步：检出代码
+      # 第三步：检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -92,7 +101,7 @@ jobs:
           fetch-depth: 1
           lfs: false
 
-      # 第三步：将源码复制到自定义工作空间
+      # 第四步：将源码复制到自定义工作空间
       - name: Copy source to custom workspace
         run: |
           echo "复制源码到自定义工作空间: ${{ env.WORKSPACE_PATH }}"
@@ -100,7 +109,7 @@ jobs:
           echo "复制完成"
           ls -la ${{ env.WORKSPACE_PATH }}/
 
-      # 第四步：设置构建缓存（只缓存dl目录）
+      # 第五步：设置构建缓存（只缓存dl目录）
       - name: Cache OpenWrt downloads
         uses: actions/cache@v3
         with:
@@ -109,7 +118,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-dl-
 
-      # 第五步：修复脚本权限
+      # 第六步：修复脚本权限
       - name: Fix script permissions
         run: |
           echo "修复脚本权限..."
@@ -117,7 +126,7 @@ jobs:
           find "${{ env.WORKSPACE_PATH }}" -name "*.sh" -type f -exec sed -i 's/\r$//' {} \; 2>/dev/null || true
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第六步：最小化依赖安装
+      # 第七步：最小化依赖安装
       - name: Install minimal dependencies
         run: |
           echo "=== 安装最小化依赖 ==="
@@ -134,7 +143,7 @@ jobs:
           echo "安装后磁盘空间:"
           df -h
 
-      # 第七步：准备源码目录结构
+      # 第八步：准备源码目录结构
       - name: Prepare source directory structure
         run: |
           echo "准备源码目录结构..."
@@ -143,7 +152,7 @@ jobs:
           echo "当前目录: $(pwd)"
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第八步：克隆 iStoreOS 源码（优化版）
+      # 第九步：克隆 iStoreOS 源码（优化版）
       - name: Clone iStoreOS source (optimized)
         run: |
           echo "克隆 iStoreOS 源码..."
@@ -160,7 +169,7 @@ jobs:
           ls -la
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第九步：克隆 OpenWrt 源码（优化版）
+      # 第十步：克隆 OpenWrt 源码（优化版）
       - name: Clone OpenWrt source (optimized)
         run: |
           echo "克隆 OpenWrt 源码..."
@@ -181,7 +190,7 @@ jobs:
           df -h
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十步：链接缓存目录
+      # 第十一步：链接缓存目录
       - name: Link cache directories
         run: |
           echo "链接缓存目录..."
@@ -196,7 +205,7 @@ jobs:
           ls -la | grep -E "^l.*dl"
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十一步：配置 Feeds（精简版）
+      # 第十二步：配置 Feeds（精简版）
       - name: Configure feeds (minimal)
         run: |
           echo "配置 feeds..."
@@ -213,7 +222,7 @@ jobs:
           cat feeds.conf
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十二步：更新和安装 Feeds（选择性）
+      # 第十三步：更新和安装 Feeds（选择性）
       - name: Update and install feeds selectively
         run: |
           echo "更新和安装 feeds..."
@@ -223,7 +232,8 @@ jobs:
           ./scripts/feeds update -a
           
           # 根据构建类型安装不同的feeds
-          if [ "${{ env.BUILD_TYPE }}" = "minimal" ]; then
+          BUILD_TYPE="${{ steps.set-build-type.outputs.build-type || 'minimal' }}"
+          if [ "$BUILD_TYPE" = "minimal" ]; then
             echo "最小化安装: 只安装基础包"
             ./scripts/feeds install -a -p packages
             ./scripts/feeds install -a -p luci
@@ -234,7 +244,7 @@ jobs:
           echo "feeds 安装完成"
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十三步：应用补丁
+      # 第十四步：应用补丁
       - name: Apply patches
         run: |
           echo "应用补丁..."
@@ -247,7 +257,7 @@ jobs:
           fi
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十四步：应用自定义脚本
+      # 第十五步：应用自定义脚本
       - name: Apply custom scripts
         run: |
           echo "应用自定义脚本..."
@@ -260,14 +270,15 @@ jobs:
           fi
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十五步：复制和配置配置文件（优化版）
+      # 第十六步：复制和配置配置文件（优化版）
       - name: Copy and configure config file (optimized)
         run: |
           echo "复制和配置配置文件..."
           cd istoreos/openwrt
           
           # 根据构建类型选择配置文件
-          if [ "${{ env.BUILD_TYPE }}" = "minimal" ]; then
+          BUILD_TYPE="${{ steps.set-build-type.outputs.build-type || 'minimal' }}"
+          if [ "$BUILD_TYPE" = "minimal" ]; then
             echo "使用精简版配置文件..."
             CONFIG_FILE="../../configs/r2cplus-minimal.config"
           else
@@ -307,7 +318,7 @@ jobs:
           grep -E "CONFIG_TARGET|CONFIG_ARCH|CONFIG_PACKAGE" .config | head -20
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十六步：下载软件包（优化版）
+      # 第十七步：下载软件包（优化版）
       - name: Download packages (optimized)
         run: |
           echo "下载软件包..."
@@ -335,7 +346,7 @@ jobs:
           df -h
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十七步：额外磁盘清理
+      # 第十八步：额外磁盘清理
       - name: Extra disk cleanup
         run: |
           echo "进行额外磁盘清理..."
@@ -358,7 +369,7 @@ jobs:
           echo "清理后磁盘空间:"
           df -h
 
-      # 第十八步：编译固件（极简优化版）
+      # 第十九步：编译固件（极简优化版）
       - name: Build firmware (minimal optimized)
         run: |
           echo "=== 编译固件开始（极简优化版） ==="
@@ -430,7 +441,7 @@ jobs:
           df -h
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十九步：后处理
+      # 第二十步：后处理
       - name: Post-build processing
         if: success()
         run: |
@@ -449,17 +460,17 @@ jobs:
           ls -la ${{ env.WORKSPACE_PATH }}/artifacts/
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第二十步：上传产物
+      # 第二十一步：上传产物
       - name: Upload artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.DEVICE }}-${{ env.BUILD_TYPE }}-firmware-${{ github.run_number }}
+          name: ${{ env.DEVICE }}-firmware-${{ github.run_number }}
           path: ${{ env.WORKSPACE_PATH }}/artifacts/*
           retention-days: 14
           if-no-files-found: error
 
-      # 第二十一步：编译失败诊断
+      # 第二十二步：编译失败诊断
       - name: Diagnostics on failure
         if: failure()
         run: |
@@ -478,7 +489,7 @@ jobs:
           find "${{ env.WORKSPACE_PATH }}" -type f -size +10M -exec ls -lh {} \; 2>/dev/null | head -10 || true
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第二十二步：清理工作空间
+      # 第二十三步：清理工作空间
       - name: Cleanup workspace
         if: always()
         run: |
