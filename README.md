@@ -79,6 +79,27 @@
 2. `scripts/custom_scripts.sh` - 系统配置
 3. `patches/r2cplus-boot.patch` - 内核补丁
 
+### 本地构建
+
+	# 克隆仓库
+	git clone https://github.com/EZ-6086/istoreos-R2C-Plus.git
+	cd istoreos-R2C-Plus
+	
+	# 运行构建脚本
+	./scripts/apply_patches.sh
+	./scripts/custom_scripts.sh
+	
+	# 进入OpenWrt目录
+	cd istoreos/openwrt
+	
+	# 配置
+	make menuconfig
+	# 选择: Target System -> Rockchip ARMv8
+	# 选择: Subtarget -> RK33xx
+	# 选择: Target Profile -> FriendlyARM NanoPi R2C Plus
+	
+	# 编译
+	make -j$(nproc)
 
 ## 常见问题
 
@@ -112,17 +133,19 @@ A: 确保已安装正确的驱动：
 
 本项目基于 GPL-2.0 许可证开源。
 
-## 贡献
+## 特别提示 
 
-欢迎提交 Issue 和 Pull Request 来改善此项目。
+因精力有限不提供任何技术支持和教程等相关问题解答，不保证完全无 BUG！
+本人不对任何人因使用本固件所遭受的任何理论或实际的损失承担责任！
+本固件禁止用于任何商业用途，请务必严格遵守国家互联网使用相关法律规定！
 
 ## 致谢
 
 - [iStoreOS](https://github.com/istoreos/istoreos)
 - [FriendlyWrt](https://github.com/friendlyarm/friendlywrt)
 - [OpenWrt](https://openwrt.org/)
-
 - [FriendlyARM](https://www.friendlyarm.com/)
+
 
 
 
