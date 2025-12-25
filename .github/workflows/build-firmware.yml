@@ -5,7 +5,7 @@
 # 描述: 优化版 GitHub Actions 工作流，利用 /home/runner 上的空间（用户有权限）
 # ====================================================
 
-name: Build iStoreOS for R2C Plus (Optimized)
+name: Build iStoreOS for R2C Plus (Optimized - Disk Space)
 
 on:
   push:
@@ -48,7 +48,6 @@ env:
   LAN_NETMASK: 255.255.255.0
   FEEDS_CONF: feeds.conf
   CONFIG_FILE: configs/r2cplus.config
-  # 使用 /home/runner 上的空间（用户有权限）
   WORKSPACE_PATH: /home/runner/istoreos-build
   CACHE_PATH: /home/runner/openwrt-cache
 
@@ -83,16 +82,15 @@ jobs:
           ls -ld ${{ env.WORKSPACE_PATH }}
           ls -ld ${{ env.CACHE_PATH }}
 
-      # 第二步：检出代码到默认位置（必须！）
+      # 第二步：检出代码到默认位置
       - name: Checkout repository (to default location)
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
           lfs: false
-          # 重要：移除自定义的 path 参数，让代码检出到 ${{ github.workspace }}
 
-      # 第三步：将源码复制到自定义工作空间，并以此为基础工作
+      # 第三步：将源码复制到自定义工作空间
       - name: Copy source to custom workspace
         run: |
           echo "复制源码到自定义工作空间: ${{ env.WORKSPACE_PATH }}"
@@ -100,19 +98,17 @@ jobs:
           echo "复制完成。自定义工作空间内容："
           ls -la ${{ env.WORKSPACE_PATH }}/
 
-      # 第四步：设置构建缓存（使用自定义空间的路径）
+      # 第四步：设置构建缓存（只缓存dl目录）
       - name: Cache dependencies
         uses: actions/cache@v3
         with:
           path: |
-            ${{ env.CACHE_PATH }}/ccache
-            ${{ env.CACHE_PATH }}/dl
-            ${{ env.CACHE_PATH }}/build_dir
-          key: ${{ runner.os }}-openwrt-${{ github.sha }}
+            ${{ env.CACHE_PATH }}/dl  # 只缓存下载的包
+          key: ${{ runner.os }}-openwrt-dl-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-openwrt-
+            ${{ runner.os }}-openwrt-dl-
 
-      # 第五步及以后：所有后续操作都在自定义工作空间进行
+      # 第五步：修复脚本权限和格式
       - name: Fix script permissions and format
         run: |
           echo "修复脚本文件..."
@@ -126,10 +122,9 @@ jobs:
             echo "警告: scripts 目录不存在，创建..."
             mkdir -p "${{ env.WORKSPACE_PATH }}/scripts"
           fi
-          # ... [其余脚本初始化代码保持原样，但路径引用已正确] ...
-        # 关键：指定工作目录
         working-directory: ${{ env.WORKSPACE_PATH }}
 
+      # 第六步：系统清理和依赖安装
       - name: System cleanup and dependencies
         run: |
           echo "=== 系统清理和依赖安装 ==="
@@ -138,7 +133,7 @@ jobs:
           sudo rm -rf /tmp/* /var/tmp/*
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            build-essential ccache ecj fastjar file g++ gawk \
+            build-essential ecj fastjar file g++ gawk \
             gettext git java-propose-classpath libelf-dev libncurses5-dev \
             libncursesw5-dev libssl-dev python3 python3-pip python3-setuptools \
             python3-dev python3-venv rsync subversion swig time unzip wget \
@@ -147,12 +142,10 @@ jobs:
             automake autoconf libtool flex bison gcc g++ make patch perl \
             libjson-perl libxml-simple-perl libfile-slurp-perl dos2unix
           pip install pyelftools
-          ccache -M 3G
-          ccache -s
           echo "清理后磁盘空间:"
           df -h
 
-      # 第六步：准备源码目录结构
+      # 第七步：准备源码目录结构
       - name: Prepare source directory structure
         run: |
           echo "准备源码目录结构..."
@@ -162,7 +155,7 @@ jobs:
           ls -la
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第七步：克隆 iStoreOS 源码
+      # 第八步：克隆 iStoreOS 源码
       - name: Clone iStoreOS source
         run: |
           echo "克隆 iStoreOS 源码..."
@@ -183,7 +176,7 @@ jobs:
           ls -la
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第八步：克隆 OpenWrt 源码
+      # 第九步：克隆 OpenWrt 源码
       - name: Clone OpenWrt source
         run: |
           echo "克隆 OpenWrt 源码..."
@@ -208,26 +201,23 @@ jobs:
           df -h
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第九步：链接缓存目录到 /home/runner 空间
+      # 第十步：链接缓存目录（只链接dl目录）
       - name: Link cache directories
         run: |
           echo "链接缓存目录..."
           cd istoreos/openwrt
+          
+          # 只链接dl目录，不链接build_dir和staging_dir以节省空间
           mkdir -p ${{ env.CACHE_PATH }}/dl
-          mkdir -p ${{ env.CACHE_PATH }}/build_dir
-          mkdir -p ${{ env.CACHE_PATH }}/staging_dir
-          mkdir -p ${{ env.CACHE_PATH }}/ccache
-          rm -rf dl build_dir staging_dir 2>/dev/null || true
+          rm -rf dl 2>/dev/null || true
           ln -sf ${{ env.CACHE_PATH }}/dl dl
-          ln -sf ${{ env.CACHE_PATH }}/build_dir build_dir
-          ln -sf ${{ env.CACHE_PATH }}/staging_dir staging_dir
-          export CCACHE_DIR="${{ env.CACHE_PATH }}/ccache"
+          
           echo "缓存目录链接完成"
-          ls -la | grep -E "^l.*(dl|build_dir|staging_dir)"
-          du -sh ${{ env.CACHE_PATH }}/* 2>/dev/null || true
+          ls -la | grep -E "^l.*dl"
+          du -sh ${{ env.CACHE_PATH }}/dl 2>/dev/null || true
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十步：配置 Feeds
+      # 第十一步：配置 Feeds
       - name: Configure feeds
         run: |
           echo "配置 feeds..."
@@ -243,7 +233,7 @@ jobs:
           cat feeds.conf
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十一步：更新和安装 Feeds
+      # 第十二步：更新和安装 Feeds
       - name: Update and install feeds
         run: |
           echo "更新和安装 feeds..."
@@ -253,7 +243,7 @@ jobs:
           echo "feeds 安装完成"
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十二步：应用补丁
+      # 第十三步：应用补丁
       - name: Apply patches
         run: |
           echo "应用补丁..."
@@ -266,7 +256,7 @@ jobs:
           fi
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十三步：应用自定义脚本
+      # 第十四步：应用自定义脚本
       - name: Apply custom scripts
         run: |
           echo "应用自定义脚本..."
@@ -279,12 +269,11 @@ jobs:
           fi
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十四步：复制和配置配置文件
+      # 第十五步：复制和配置配置文件
       - name: Copy and configure config file
         run: |
           echo "复制和配置配置文件..."
           cd istoreos/openwrt
-          # 注意配置文件路径已基于新的工作空间根目录
           if [ -f "../../${{ env.CONFIG_FILE }}" ]; then
             echo "使用自定义配置文件: ${{ env.CONFIG_FILE }}"
             cp "../../${{ env.CONFIG_FILE }}" .config
@@ -298,7 +287,7 @@ jobs:
           grep -E "CONFIG_TARGET|CONFIG_ARCH|CONFIG_LUCI" .config | head -20
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十五步：下载软件包
+      # 第十六步：下载软件包
       - name: Download packages
         run: |
           echo "下载软件包..."
@@ -320,51 +309,92 @@ jobs:
           df -h
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十六步：编译固件
+      # 第十七步：构建前清理
+      - name: Cleanup before build
+        run: |
+          echo "构建前清理..."
+          cd istoreos/openwrt
+          
+          # 清理不必要的文件释放空间
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          
+          # 删除旧的编译日志
+          rm -rf logs/* 2>/dev/null || true
+          
+          # 清理一些中间文件
+          find . -name "*.o" -type f -delete 2>/dev/null || true
+          find . -name "*.tmp" -type f -delete 2>/dev/null || true
+          
+          echo "当前磁盘空间:"
+          df -h
+        working-directory: ${{ env.WORKSPACE_PATH }}
+
+      # 第十八步：编译固件（优化版）
       - name: Build firmware
         run: |
-          echo "=== 编译固件开始 ==="
+          echo "=== 编译固件开始（优化版） ==="
           cd istoreos/openwrt
-          echo "当前目录: $(pwd)"
-          echo "所在磁盘: $(df -h . | tail -1)"
-          export CCACHE_DIR="${{ env.CACHE_PATH }}/ccache"
-          export CCACHE_MAXSIZE="3G"
-          mkdir -p $CCACHE_DIR
-          ccache -s
+          
+          # 禁用ccache以节省空间
+          unset CCACHE_DIR
+          unset CCACHE_MAXSIZE
+          
+          # 使用更保守的编译线程数
           CPU_CORES=$(nproc)
-          MEM_AVAILABLE=$(free -m | awk '/^Mem:/{print $2}')
-          if [ $MEM_AVAILABLE -gt 12000 ]; then
-            BUILD_JOBS=$((CPU_CORES * 2))
-          elif [ $MEM_AVAILABLE -gt 6000 ]; then
-            BUILD_JOBS=$CPU_CORES
-          else
-            BUILD_JOBS=$((CPU_CORES / 2))
-            [ $BUILD_JOBS -lt 2 ] && BUILD_JOBS=2
-          fi
-          echo "系统信息:"
-          echo "CPU核心数: $CPU_CORES"
-          echo "可用内存: ${MEM_AVAILABLE}MB"
-          echo "使用构建线程数: $BUILD_JOBS"
+          BUILD_JOBS=$((CPU_CORES - 1))
+          [ $BUILD_JOBS -lt 2 ] && BUILD_JOBS=2
+          
+          echo "使用编译线程数: $BUILD_JOBS"
           echo "编译前磁盘空间:"
           df -h
+          
+          # 分步编译，减少内存压力
           echo "阶段1: 编译工具链..."
           time make -j$BUILD_JOBS tools/compile
-          make clean-staging 2>/dev/null || true
+          
           echo "阶段2: 编译工具..."
           time make -j$BUILD_JOBS toolchain/compile
-          echo "阶段3: 编译目标..."
-          time make -j$BUILD_JOBS target/compile
+          
+          # 清理中间文件释放空间
+          echo "清理中间文件..."
+          rm -rf build_dir/*/autoconf-* 2>/dev/null || true
+          rm -rf build_dir/*/automake-* 2>/dev/null || true
+          
+          echo "阶段3: 编译内核..."
+          time make -j$BUILD_JOBS target/linux/compile
+          
+          echo "阶段4: 编译包..."
+          # 分批次编译包，减少内存占用
+          for i in 1 2 3; do
+            echo "第$i轮包编译..."
+            time make -j$BUILD_JOBS package/compile || {
+              echo "第$i轮编译失败，重试..."
+              sleep 5
+              time make -j$((BUILD_JOBS/2)) package/compile
+            }
+            
+            # 每轮编译后清理一些中间文件
+            if [ $i -lt 3 ]; then
+              echo "清理中间文件..."
+              find build_dir -name "*.o" -type f -delete 2>/dev/null || true
+              find build_dir -name "*.a" -type f -delete 2>/dev/null || true
+            fi
+          done
+          
           echo "最终编译..."
-          time make -j$BUILD_JOBS V=s 2>&1 | tee build.log | grep -E "(error|Error|warning|Warning|installing|Compiling|Linking)" | tail -200
+          time make -j$BUILD_JOBS V=s 2>&1 | tee build.log | grep -E "(error|Error|installing|Compiling|Linking)" | tail -200
+          
+          # 清理编译后的中间文件
+          echo "清理编译中间文件..."
+          find build_dir -name "*.o" -type f -delete 2>/dev/null || true
+          find build_dir -name "*.a" -type f -delete 2>/dev/null || true
+          find staging_dir -name "*.a" -type f -delete 2>/dev/null || true
+          
           COMPILE_RESULT=$?
           if [ $COMPILE_RESULT -eq 0 ]; then
             echo "编译成功!"
-            if find bin/targets -name "*.img" -o -name "*.bin" -o -name "*.gz" 2>/dev/null | grep -q .; then
-              echo "找到固件文件:"
-              find bin/targets -name "*.img" -o -name "*.bin" -o -name "*.gz" 2>/dev/null | xargs ls -lh
-            else
-              echo "警告: 未找到固件文件，但编译返回成功"
-            fi
+            find bin/targets -name "*.img" -o -name "*.bin" -o -name "*.gz" 2>/dev/null | xargs ls -lh
           else
             echo "编译失败!"
             tail -100 build.log | grep -i error
@@ -374,7 +404,7 @@ jobs:
           df -h
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十七步：后处理
+      # 第十九步：后处理
       - name: Post-build processing
         if: success()
         run: |
@@ -395,18 +425,17 @@ jobs:
           ls -la ${{ env.WORKSPACE_PATH }}/artifacts/
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第十八步：上传产物
+      # 第二十步：上传产物
       - name: Upload artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.DEVICE }}-firmware-${{ github.run_number }}
-          # 直接上传自定义工作空间下的产物目录
           path: ${{ env.WORKSPACE_PATH }}/artifacts/*
           retention-days: 30
           if-no-files-found: error
 
-      # 第十九步：编译失败诊断
+      # 第二十一步：编译失败诊断
       - name: Diagnostics on failure
         if: failure()
         run: |
@@ -421,7 +450,7 @@ jobs:
           fi
         working-directory: ${{ env.WORKSPACE_PATH }}
 
-      # 第二十步：清理工作空间
+      # 第二十二步：清理工作空间
       - name: Cleanup workspace
         if: always()
         run: |
