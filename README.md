@@ -77,7 +77,8 @@ make -j$(nproc)
 	├── patches/                # 内核补丁
 	├── scripts/                # 构建脚本
 	└── README.md              # 说明文档
-	
+
+
 🔧 自定义配置
 可以通过修改以下文件自定义固件：
 
